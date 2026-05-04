@@ -40,6 +40,7 @@ const VALID_ACTIONS: ReadonlySet<string> = new Set([
   'show_off', 'smug', 'praise_me', 'praise_you',
   'phone', 'tablet', 'lazy',
   'red_note', 'board_game', 'party', 'driving', 'audiobook', 'riding', 'meeting',
+  'weather_sunny', 'weather_cloudy', 'weather_rain', 'weather_thunder', 'weather_snow',
 ]);
 
 // Timezone helpers

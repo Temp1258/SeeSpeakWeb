@@ -62,7 +62,7 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   show_off: { title: '😎 得瑟', body: '{name} 在得瑟，快瞧瞧！' },
   smug: { title: '🤩 得意', body: '{name} 得意得不行～' },  // legacy, kept for old client compat
   praise_me: { title: '🌟 求夸夸', body: '{name} 想要被夸夸！' },
-  praise_you: { title: '🥰 夸你', body: '{name} 在夸你，你超棒！' },
+  praise_you: { title: '👍 蒸蚌', body: '{name} 觉得你蒸蚌！' },
   urge_question: { title: '⏰ 催答题', body: '{name} 催你回答今天的每日问答～' },
   urge_snap: { title: '⏰ 催拍照', body: '{name} 催你拍今天的快照～' },
   react_question_up: { title: '👍 收到点赞', body: '{name} 给你今天的答案点了赞' },
@@ -91,6 +91,11 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   snap_both: { title: '📸 每日快照', body: '你们都拍了今天的快照！快来看看 💕' },
   sticky_posted: { title: '📝 每日一帖', body: '{name} 贴了一张新便利贴' },
   sticky_appended: { title: '✍️ 每日一帖', body: '{name} 在便利贴上加了几句' },
+  weather_sunny: { title: '☀️ 晴天', body: '{name} 那边出太阳啦～' },
+  weather_cloudy: { title: '☁️ 多云', body: '{name} 那边多云～' },
+  weather_rain: { title: '🌧️ 雨天', body: '{name} 那边下雨啦，记得带伞' },
+  weather_thunder: { title: '⚡️ 打雷', body: '{name} 那边打雷啦！' },
+  weather_snow: { title: '❄️ 下雪', body: '{name} 那边下雪啦，好浪漫～' },
   touch: { title: '拍臭宝！👏', body: '{name} 想你了！🥹' },
 };
 

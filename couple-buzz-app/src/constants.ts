@@ -22,7 +22,8 @@ export type ActionType =
   | 'slap' | 'gym' | 'milk_tea' | 'drink'
   | 'work' | 'where_r_u' | 'what_doing' | 'ping'
   | 'call_wife' | 'call_husband' | 'call_baby'
-  | 'praise_me' | 'praise_you';
+  | 'praise_me' | 'praise_you'
+  | 'weather_sunny' | 'weather_cloudy' | 'weather_rain' | 'weather_thunder' | 'weather_snow';
 
 export interface ActionConfig {
   type: ActionType;
@@ -50,7 +51,7 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'rose', emoji: '🌹', label: '玫瑰', color: '#FF8FAB' },
       { type: 'hug', emoji: '🤗', label: '抱抱', color: '#FFCAD4' },
       { type: 'slap', emoji: '👋', label: '打你', color: '#FF9B9B' },
-      { type: 'praise_you', emoji: '🥰', label: '夸你', color: '#FFCAD4' },
+      { type: 'praise_you', emoji: '👍', label: '蒸蚌', color: '#FFCAD4' },
       { type: 'praise_me', emoji: '🌟', label: '夸我', color: '#FFEAA7' },
     ],
   },
@@ -105,6 +106,16 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'call_baby', emoji: '🍼', label: '召唤宝贝', color: '#FFCAD4' },
       { type: 'call_wife', emoji: '👰', label: '召唤老婆', color: '#FFB5C2' },
       { type: 'ping', emoji: '🛎️', label: 'Ping', color: '#FFD699' },
+    ],
+  },
+  {
+    title: '天气',
+    actions: [
+      { type: 'weather_sunny', emoji: '☀️', label: '晴天', color: '#FFEAA7' },
+      { type: 'weather_cloudy', emoji: '☁️', label: '多云', color: '#D4C5A9' },
+      { type: 'weather_rain', emoji: '🌧️', label: '雨天', color: '#A8D8EA' },
+      { type: 'weather_thunder', emoji: '⚡️', label: '打雷', color: '#C3AED6' },
+      { type: 'weather_snow', emoji: '❄️', label: '下雪', color: '#B5D8CC' },
     ],
   },
 ];
