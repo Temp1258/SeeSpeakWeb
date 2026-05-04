@@ -1779,7 +1779,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       my_snapped: !!mySnap,
       partner_snapped: !!partnerSnap,
       my_photo: mySnap?.photo_path ? signImagePath(mySnap.photo_path) : null,
-      partner_photo: partnerSnap?.photo_path ? signImagePath(partnerSnap.photo_path) : null,
+      // Mirror the daily-question reveal rule: partner content only after
+      // BOTH have submitted. Without this, calling /snaps/today after the
+      // partner has snapped (and before me) leaks ta's photo URL.
+      partner_photo: bothSnapped && partnerSnap?.photo_path ? signImagePath(partnerSnap.photo_path) : null,
       my_reaction_to_partner: myReactionToPartner,
       partner_reaction_to_me: partnerReactionToMe,
     });
@@ -1804,12 +1807,17 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!user.partner_id) return res.json({ snaps: [] });
 
-    const snaps = dbOps.getSnaps(userId, user.partner_id, month).map(s => ({
-      date: s.snap_date,
-      my_photo: s.user_photo ? signImagePath(s.user_photo) : null,
-      partner_photo: s.partner_photo ? signImagePath(s.partner_photo) : null,
-      both_snapped: !!s.user_photo && !!s.partner_photo,
-    }));
+    const snaps = dbOps.getSnaps(userId, user.partner_id, month).map(s => {
+      const both = !!s.user_photo && !!s.partner_photo;
+      return {
+        date: s.snap_date,
+        my_photo: s.user_photo ? signImagePath(s.user_photo) : null,
+        // Same gating as /snaps/today: don't expose ta's photo on past days
+        // where I never snapped, otherwise the calendar can be used to peek.
+        partner_photo: both && s.partner_photo ? signImagePath(s.partner_photo) : null,
+        both_snapped: both,
+      };
+    });
 
     res.json({ snaps });
   });

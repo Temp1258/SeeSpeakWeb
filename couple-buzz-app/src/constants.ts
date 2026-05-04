@@ -59,11 +59,11 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
     title: '心情',
     actions: [
       { type: 'shy', emoji: '😳', label: '害羞', color: '#FFB8C6' },
-      { type: 'haha', emoji: '😆', label: '哈哈', color: '#FFEAA7' },
+      { type: 'haha', emoji: '😬', label: '嘻嘻', color: '#FFEAA7' },
       { type: 'hehe', emoji: '😏', label: '嘿嘿', color: '#FFD699' },
       { type: 'cry', emoji: '🥹', label: '哭哭', color: '#FFB5C2' },
       { type: 'wuwu', emoji: '🥺', label: '呜呜', color: '#FFCAD4' },
-      { type: 'sad', emoji: '💔', label: '伤心', color: '#D4C5A9' },
+      { type: 'sad', emoji: '😫', label: '难过', color: '#D4C5A9' },
       { type: 'angry_silent', emoji: '🙉', label: '生气·闭嘴', color: '#FF9B9B' },
       { type: 'angry_talk', emoji: '😤', label: '生气·说话', color: '#FFB088' },
       { type: 'clown', emoji: '🤡', label: '小丑', color: '#FFD699' },

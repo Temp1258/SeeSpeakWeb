@@ -1905,6 +1905,64 @@ describe('Daily Snaps', () => {
     expect(res.status).toBe(200);
     expect(res.body.snaps).toBeDefined();
   });
+
+  it('should hide partner photo on /snaps/today until I have also snapped', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    // Bob snaps first; Alice has not snapped yet.
+    const today = new Date(Date.now() + 3600 * 1000).toISOString().slice(0, 10);
+    dbOps.saveSnap(bob.user_id, today, `${bob.user_id}/${today}.jpg`);
+
+    const beforeAlice = await request(app)
+      .get('/api/snaps/today')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(beforeAlice.status).toBe(200);
+    expect(beforeAlice.body.partner_snapped).toBe(true);
+    expect(beforeAlice.body.my_snapped).toBe(false);
+    // Reveal gating: ta's photo URL must NOT leak before I've snapped.
+    expect(beforeAlice.body.partner_photo).toBeNull();
+
+    // Once Alice also snaps, ta's photo unlocks.
+    dbOps.saveSnap(alice.user_id, today, `${alice.user_id}/${today}.jpg`);
+    const afterAlice = await request(app)
+      .get('/api/snaps/today')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(afterAlice.body.my_snapped).toBe(true);
+    expect(afterAlice.body.partner_snapped).toBe(true);
+    expect(afterAlice.body.partner_photo).toBeTruthy();
+    expect(afterAlice.body.my_photo).toBeTruthy();
+  });
+
+  it('should hide partner photo on /snaps month list for days I never snapped', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+
+    // Day 1: only Bob snaps. Day 2: both snap.
+    const day1 = '2026-04-10';
+    const day2 = '2026-04-11';
+    dbOps.saveSnap(bob.user_id, day1, `${bob.user_id}/${day1}.jpg`);
+    dbOps.saveSnap(alice.user_id, day2, `${alice.user_id}/${day2}.jpg`);
+    dbOps.saveSnap(bob.user_id, day2, `${bob.user_id}/${day2}.jpg`);
+
+    const res = await request(app)
+      .get('/api/snaps?month=2026-04')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(res.status).toBe(200);
+
+    const byDate: Record<string, any> = {};
+    for (const s of res.body.snaps) byDate[s.date] = s;
+
+    // Day 1: Alice never snapped → ta's photo must stay hidden.
+    expect(byDate[day1].my_photo).toBeNull();
+    expect(byDate[day1].partner_photo).toBeNull();
+    expect(byDate[day1].both_snapped).toBe(false);
+
+    // Day 2: both snapped → both photos visible.
+    expect(byDate[day2].my_photo).toBeTruthy();
+    expect(byDate[day2].partner_photo).toBeTruthy();
+    expect(byDate[day2].both_snapped).toBe(true);
+  });
 });
 
 describe('POST /api/logout', () => {
