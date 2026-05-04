@@ -220,17 +220,31 @@ const dividerStyles = StyleSheet.create({
   },
 });
 
-function groupByDate(actions: HistoryAction[]): Section[] {
-  const groups: Record<string, HistoryAction[]> = {};
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
+// Format a Date as YYYY-MM-DD in the supplied tz. Falls back to UTC slice
+// if the runtime can't resolve the tz (very rare; safety net).
+function localDateStringInTz(date: Date, tz: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
 
-  const todayStr = today.toISOString().slice(0, 10);
-  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+// Group actions by the user's-own-timezone calendar day (the timezone they
+// picked in 数据 tab). The previous version sliced UTC strings, which gave
+// non-UTC users a wrong "今天/昨天" boundary every day around midnight (BJT
+// users before 8am, NY users after 7pm).
+function groupByDate(actions: HistoryAction[], myTz: string): Section[] {
+  const groups: Record<string, HistoryAction[]> = {};
+  const now = new Date();
+  const todayStr = localDateStringInTz(now, myTz);
+  const yesterdayStr = localDateStringInTz(new Date(now.getTime() - 86400000), myTz);
 
   for (const action of actions) {
-    const dateStr = action.created_at.slice(0, 10);
+    // Server timestamps are SQLite-default 'YYYY-MM-DD HH:MM:SS' in UTC; the
+    // 'Z' suffix forces JS Date to read them as UTC instead of local-naive.
+    const utcDate = new Date(action.created_at + 'Z');
+    const dateStr = localDateStringInTz(utcDate, myTz);
     let label: string;
 
     if (dateStr === todayStr) {
@@ -266,6 +280,11 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   onLatestSeenRef.current = onLatestSeen;
   const prevLatestIdRef = useRef(0);
   const myUserIdRef = useRef('');
+  // Mirror myTz state into a ref so the polling closure (re-created only
+  // when its useFocusEffect deps change) can always read the latest value
+  // after Settings updates the user's timezone.
+  const myTzRef = useRef(myTz);
+  useEffect(() => { myTzRef.current = myTz; }, [myTz]);
   // Header height (measured via onLayout) drives the gradient fade strip
   // that sits right below the title — gives a soft blur edge as list items
   // scroll up into the header area instead of a hard cut.
@@ -466,6 +485,9 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       setMyTimezone(savedTz || getDeviceTimezone());
       setMyPartnerTz(savedPartnerTz || 'Asia/Shanghai');
 
+      // Group with the just-loaded tz (state setMyTz above hasn't settled
+      // for this synchronous slice yet).
+      const tz = savedTz || getDeviceTimezone();
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
       // Capture BEFORE marking read so the divider sits where the user left
@@ -473,7 +495,7 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       if (captureBoundary) {
         setBoundaryId(result.last_read_action_id ?? 0);
       }
-      setSections(groupByDate(reversed));
+      setSections(groupByDate(reversed, tz));
       setReactions(result.reactions || {});
       const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
       prevLatestIdRef.current = latestId;
@@ -495,6 +517,10 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       setDividerDismissing(false);
       setDividerHardHidden(false);
       loadHistory(true);
+      // Socket `action_new` is the primary live path; this polling exists as
+      // a safety net for the case where the socket has disconnected and
+      // hasn't reconnected yet. 30s is enough to feel responsive without
+      // doubling up on traffic with the App-level signal.
       const interval = setInterval(async () => {
         try {
           const result = await api.getHistory(100);
@@ -503,13 +529,13 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
           if (latestId !== prevLatestIdRef.current) {
             // Polling intentionally does NOT re-capture boundary — it would
             // cause the divider to jump as new messages arrive while viewing.
-            setSections(groupByDate(reversed));
+            setSections(groupByDate(reversed, myTzRef.current));
             setReactions(result.reactions || {});
             prevLatestIdRef.current = latestId;
             if (latestId > 0) onLatestSeenRef.current?.(latestId);
           }
         } catch {}
-      }, 5000);
+      }, 30000);
       // Live arrival via socket → refresh immediately so the new bubble
       // springs in within milliseconds (the 5s poller would otherwise hold
       // it back). Filter self so handleSendAction's own refresh isn't
@@ -549,7 +575,7 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       }
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
-      setSections(groupByDate(reversed));
+      setSections(groupByDate(reversed, myTzRef.current));
       setReactions(result.reactions || {});
       const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
       prevLatestIdRef.current = latestId;

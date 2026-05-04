@@ -364,7 +364,6 @@ export default function App() {
   const [hasUnreadPromises, setHasUnreadPromises] = useState(false);
   const [hasUnreadHome, setHasUnreadHome] = useState(false);
   const activeTabRef = useRef('Home');
-  const initializedRef = useRef(false);
   const myUserIdRef = useRef('');
   const [overlay, setOverlay] = useState<React.ReactNode>(null);
   const toolbarSlot = useMemo(() => ({ set: setOverlay }), []);
@@ -444,36 +443,22 @@ export default function App() {
     return () => clearInterval(pollRef.current);
   }, [appState]);
 
+  // Bootstrap last-seen-id once on ready. The unread red dot is now driven
+  // entirely by the socket `action_new` event + the foreground push
+  // listener — both already wired below — so the prior 10s polling here
+  // (which fired alongside HistoryScreen's own poll, doubling traffic) is
+  // gone. Initial fetch still runs so handleLatestSeen has a sensible
+  // starting cursor for mark-read.
   useEffect(() => {
     if (appState !== 'ready') return;
-
-    const init = async () => {
+    (async () => {
       try {
         const result = await api.getHistory(1);
         if (result.actions.length > 0) {
           lastSeenIdRef.current = result.actions[0].id;
         }
-        initializedRef.current = true;
       } catch {}
-    };
-    init();
-
-    const poll = async () => {
-      if (!initializedRef.current) return;
-      try {
-        const result = await api.getHistory(1);
-        if (result.actions.length > 0 && result.actions[0].id > lastSeenIdRef.current) {
-          lastSeenIdRef.current = result.actions[0].id;
-          const isPartnerMsg = result.actions[0].user_id !== myUserIdRef.current;
-          if (isPartnerMsg && activeTabRef.current !== 'History') {
-            setHasUnread(true);
-          }
-        }
-      } catch {}
-    };
-
-    const interval = setInterval(poll, 10000);
-    return () => clearInterval(interval);
+    })();
   }, [appState]);
 
   // Foreground = clear the visual icon badge so a stale "5" doesn't linger.

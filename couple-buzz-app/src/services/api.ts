@@ -21,6 +21,19 @@ export class AuthError extends Error {
 //                Wi-Fi blip on cold launch must not boot a logged-in user.
 type RefreshOutcome = 'success' | 'auth' | 'transient';
 
+// Default network timeout. Without this, RN's fetch can hang indefinitely
+// on weak networks (subway, elevator, transient TLS stalls), leaving the UI
+// stuck in a loading state until the user kills the app. 15s covers all
+// normal API endpoints; uploads pass a longer timeout explicitly.
+const DEFAULT_TIMEOUT_MS = 15000;
+const UPLOAD_TIMEOUT_MS = 30000;
+
+function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(id));
+}
+
 // Singleton-promise lock: when several requests hit a 401 in parallel, they
 // all `await` the same in-flight refresh instead of the second-onward giving
 // up immediately and bubbling the original 401 into an AuthError (which
@@ -37,14 +50,14 @@ async function refreshAccessToken(): Promise<RefreshOutcome> {
 
       let res: Response;
       try {
-        res = await fetch(`${API_URL}/api/auth/refresh`, {
+        res = await fetchWithTimeout(`${API_URL}/api/auth/refresh`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refresh_token: refreshToken }),
         });
       } catch {
-        // DNS/network/TLS failure — the refresh token may still be valid;
-        // do NOT log the user out.
+        // DNS/network/TLS failure / timeout — the refresh token may still
+        // be valid; do NOT log the user out.
         return 'transient';
       }
 
@@ -85,7 +98,14 @@ async function request<T>(path: string, options: RequestInit = {}, requiresAuth 
     }
   }
 
-  let res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(`${API_URL}${path}`, { ...options, headers });
+  } catch {
+    // Timeout / DNS / TLS failure — surface as a generic transient error
+    // so callers don't conflate it with an auth problem.
+    throw new Error('Network error');
+  }
 
   // Auto-refresh on 401
   if (res.status === 401 && requiresAuth) {
@@ -93,7 +113,11 @@ async function request<T>(path: string, options: RequestInit = {}, requiresAuth 
     if (outcome === 'success') {
       const newToken = await storage.getAccessToken();
       headers['Authorization'] = `Bearer ${newToken}`;
-      res = await fetch(`${API_URL}${path}`, { ...options, headers });
+      try {
+        res = await fetchWithTimeout(`${API_URL}${path}`, { ...options, headers });
+      } catch {
+        throw new Error('Network error');
+      }
       // If the retry still 401s, the new token was already revoked — that's
       // a real auth failure.
       if (res.status === 401) throw new AuthError();
@@ -618,6 +642,56 @@ export const api = {
   },
   getSnaps(month: string): Promise<{ snaps: SnapMonth[] }> {
     return request(`/api/snaps?month=${month}`);
+  },
+
+  // Multipart upload with the same 401→refresh→retry safety as `request()`.
+  // Bypassing `request()` (which sets Content-Type: application/json) is
+  // necessary because RN's fetch needs to pick its own multipart boundary.
+  // Without 401 retry here, the user would see "上传失败" the first time
+  // their access_token expires (every 15min) until they restart the app.
+  async uploadSnap(uri: string): Promise<{ success: boolean; both_snapped: boolean; snap_date: string }> {
+    const tryUpload = async (): Promise<Response> => {
+      const token = await storage.getAccessToken();
+      const fd = new FormData();
+      fd.append('photo', { uri, type: 'image/jpeg', name: 'snap.jpg' } as any);
+      return fetchWithTimeout(`${API_URL}/api/snaps`, {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        body: fd,
+      }, UPLOAD_TIMEOUT_MS);
+    };
+
+    let res: Response;
+    try {
+      res = await tryUpload();
+    } catch {
+      throw new Error('Network error');
+    }
+
+    if (res.status === 401) {
+      const outcome = await refreshAccessToken();
+      if (outcome === 'success') {
+        try {
+          res = await tryUpload();
+        } catch {
+          throw new Error('Network error');
+        }
+        if (res.status === 401) throw new AuthError();
+      } else if (outcome === 'auth') {
+        throw new AuthError();
+      } else {
+        throw new Error('Network error');
+      }
+    }
+
+    let data: any;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(`Server error (${res.status})`);
+    }
+    if (!res.ok) throw new Error(data.error || '上传失败');
+    return data;
   },
 
   urge(type: 'question' | 'snap'): Promise<{ success: boolean }> {

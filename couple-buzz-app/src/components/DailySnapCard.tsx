@@ -5,7 +5,6 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { COLORS, API_URL } from '../constants';
 import { api, SnapTodayResponse } from '../services/api';
-import { storage } from '../utils/storage';
 
 const URGE_COOLDOWN_MS = 5 * 1000;
 
@@ -63,28 +62,12 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
 
     setUploading(true);
     try {
-      const formData = new FormData();
-      formData.append('photo', {
-        uri: result.assets[0].uri,
-        type: 'image/jpeg',
-        name: 'snap.jpg',
-      } as any);
-
-      const token = await storage.getAccessToken();
-      const res = await fetch(`${API_URL}/api/snaps`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        Alert.alert('', err.error || '上传失败');
-      } else {
-        await load();
-      }
-    } catch {
-      Alert.alert('', '上传失败');
+      // Goes through api.uploadSnap so a stale access_token (≥15min idle)
+      // triggers refresh+retry instead of bouncing the user with "上传失败".
+      await api.uploadSnap(result.assets[0].uri);
+      await load();
+    } catch (e: any) {
+      Alert.alert('', e.message || '上传失败');
     }
     setUploading(false);
   };

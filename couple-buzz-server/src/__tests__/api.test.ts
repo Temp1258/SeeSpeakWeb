@@ -1963,6 +1963,57 @@ describe('Daily Snaps', () => {
     expect(byDate[day2].partner_photo).toBeTruthy();
     expect(byDate[day2].both_snapped).toBe(true);
   });
+
+  it('saveSnapAtomic should reject duplicate same-day uploads', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const date = '2026-04-12';
+
+    // First call: claim the row.
+    const first = dbOps.saveSnapAtomic(alice.user_id, bob.user_id, date, `${alice.user_id}/${date}.jpg`);
+    expect(first.saved).toBe(true);
+    expect(first.bothSnapped).toBe(false);
+
+    // Second call: race-loser, must NOT clobber the existing row.
+    const second = dbOps.saveSnapAtomic(alice.user_id, bob.user_id, date, `${alice.user_id}/${date}-other.jpg`);
+    expect(second.saved).toBe(false);
+    expect(second.bothSnapped).toBe(false);
+
+    // The DB row from the first call survives unchanged.
+    const snap = dbOps.getSnap(alice.user_id, date);
+    expect(snap?.photo_path).toBe(`${alice.user_id}/${date}.jpg`);
+  });
+
+  it('saveSnapAtomic should report bothSnapped when partner already snapped', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const date = '2026-04-13';
+
+    // Bob snaps first.
+    dbOps.saveSnap(bob.user_id, date, `${bob.user_id}/${date}.jpg`);
+
+    // Alice's atomic save sees Bob's row inside the same tx.
+    const result = dbOps.saveSnapAtomic(alice.user_id, bob.user_id, date, `${alice.user_id}/${date}.jpg`);
+    expect(result.saved).toBe(true);
+    expect(result.bothSnapped).toBe(true);
+  });
+
+  it('deleteSnap should let the user retry after a failed file write', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const date = '2026-04-14';
+
+    dbOps.saveSnapAtomic(alice.user_id, bob.user_id, date, `${alice.user_id}/${date}.jpg`);
+    expect(dbOps.getSnap(alice.user_id, date)).toBeDefined();
+
+    // Simulate route-level rollback after a fs.rename failure.
+    dbOps.deleteSnap(alice.user_id, date);
+    expect(dbOps.getSnap(alice.user_id, date)).toBeUndefined();
+
+    // After rollback the user can claim the slot again.
+    const retry = dbOps.saveSnapAtomic(alice.user_id, bob.user_id, date, `${alice.user_id}/${date}.jpg`);
+    expect(retry.saved).toBe(true);
+  });
 });
 
 describe('POST /api/logout', () => {

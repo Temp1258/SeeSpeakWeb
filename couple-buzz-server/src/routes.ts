@@ -1727,33 +1727,42 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!user.partner_id) { cleanup(); return res.status(400).json({ error: 'Not paired' }); }
 
     const snapDate = getBjt7amDate();
-    if (dbOps.getSnap(userId, snapDate)) {
+    const photoPath = `${userId}/${snapDate}.jpg`;
+
+    // DB-first via INSERT OR IGNORE inside a tx that also reads partner's
+    // snap. Without this, two parallel uploads from the same user could
+    // both pass a pre-check and then race the file rename — leaving one
+    // user's photo on disk and the other's row in the DB.
+    const { saved, bothSnapped } = dbOps.saveSnapAtomic(userId, user.partner_id, snapDate, photoPath);
+    if (!saved) {
       cleanup();
       return res.status(400).json({ error: 'Already snapped today' });
     }
 
+    // Only after the row is claimed do we move the tmp into place. If the
+    // rename fails we must roll back the row so the user can retry —
+    // otherwise the row would point to a missing file forever.
     const finalDir = path.join(__dirname, '..', 'data', 'snaps', userId);
     fs.mkdirSync(finalDir, { recursive: true });
     const finalPath = path.join(finalDir, `${snapDate}.jpg`);
     try {
       fs.renameSync(tmpPath, finalPath);
     } catch (err) {
+      dbOps.deleteSnap(userId, snapDate);
       cleanup();
       return res.status(500).json({ error: 'Failed to save photo' });
     }
 
-    const photoPath = `${userId}/${snapDate}.jpg`;
-    dbOps.saveSnap(userId, snapDate, photoPath);
-
-    // Both sides share the same BJT-7am session date.
+    // Re-check partner's state right before the push to close the millisecond
+    // race where partner's tx commits between mine and the push send.
     const partner = dbOps.getUser(user.partner_id);
-    const partnerSnap = dbOps.getSnap(user.partner_id, snapDate);
-    const bothSnapped = !!partnerSnap;
+    const partnerSnapNow = dbOps.getSnap(user.partner_id, snapDate);
+    const both = bothSnapped || !!partnerSnapNow;
     if (partner?.device_token) {
-      await pushFn(partner.device_token, bothSnapped ? 'snap_both' : 'snap_submitted', user.name);
+      await pushFn(partner.device_token, both ? 'snap_both' : 'snap_submitted', user.name);
     }
 
-    res.json({ success: true, both_snapped: bothSnapped, snap_date: snapDate });
+    res.json({ success: true, both_snapped: both, snap_date: snapDate });
   });
 
   // GET /api/snaps/today

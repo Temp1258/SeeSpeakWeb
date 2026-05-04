@@ -377,6 +377,18 @@ export interface DbOps {
   deleteBucketItem(id: number, userId: string, partnerId: string): boolean;
   // Daily Snaps
   saveSnap(userId: string, snapDate: string, photoPath: string): boolean;
+  // Atomic INSERT OR IGNORE + read partner's snap inside one transaction.
+  // Returns saved=false when the user has already snapped today (so the
+  // route can short-circuit with a clear error before touching the file
+  // system). Closes the double-click race where two parallel uploads
+  // could both pass a pre-INSERT check and end up with one user's tmp
+  // overwriting the other's finalPath.
+  saveSnapAtomic(userId: string, partnerId: string, snapDate: string, photoPath: string): { saved: boolean; bothSnapped: boolean };
+  // Used to roll back the saveSnapAtomic row when the subsequent file
+  // rename fails (disk full / permission denied) so the user can retry
+  // without being permanently locked out by a phantom DB row pointing
+  // to a non-existent file.
+  deleteSnap(userId: string, snapDate: string): void;
   getSnap(userId: string, snapDate: string): DailySnap | undefined;
   getSnaps(userId: string, partnerId: string, month: string): { snap_date: string; user_photo: string | null; partner_photo: string | null }[];
   // Daily Reactions (👍/👎 on partner's daily question answer or daily snap)
@@ -1411,12 +1423,18 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     'UPDATE users SET token_version = token_version + 1 WHERE id = ?'
   );
 
+  // Streak day boundary aligns with the BJT 7am session boundary used by
+  // daily-question / daily-snap (UTC 23h = BJT 7am). Without the +1h shift,
+  // a NY user's 9pm action lands on UTC's "next day" while their partner's
+  // BJT 8am same-calendar-day action lands on the prior UTC day — so the
+  // pair never shares a streak day across timezones. The +1h shift gives
+  // both sides a stable shared anchor.
   const stmtGetStreak = db.prepare(`
     WITH daily_activity AS (
-      SELECT DATE(created_at) AS day, user_id
+      SELECT DATE(created_at, '+1 hour') AS day, user_id
       FROM actions
       WHERE user_id IN (?, ?) AND reply_to IS NULL
-      GROUP BY DATE(created_at), user_id
+      GROUP BY DATE(created_at, '+1 hour'), user_id
     ),
     both_active AS (
       SELECT day FROM daily_activity
@@ -1432,7 +1450,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       FROM numbered GROUP BY grp
     )
     SELECT length FROM streaks
-    WHERE end_day >= DATE('now', '-1 day')
+    WHERE end_day >= DATE('now', '+1 hour', '-1 day')
     ORDER BY end_day DESC LIMIT 1
   `);
 
@@ -1664,6 +1682,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
   const stmtGetSnap = db.prepare(
     'SELECT * FROM daily_snaps WHERE user_id = ? AND snap_date = ?'
+  );
+  const stmtDeleteSnap = db.prepare(
+    'DELETE FROM daily_snaps WHERE user_id = ? AND snap_date = ?'
   );
   const stmtGetSnapsMonth = db.prepare(`
     SELECT s.snap_date,
@@ -2290,6 +2311,19 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     saveSnap(userId: string, snapDate: string, photoPath: string): boolean {
       const result = stmtInsertSnap.run(userId, snapDate, photoPath);
       return result.changes > 0;
+    },
+
+    saveSnapAtomic(userId, partnerId, snapDate, photoPath) {
+      return db.transaction(() => {
+        const result = stmtInsertSnap.run(userId, snapDate, photoPath);
+        if (result.changes === 0) return { saved: false, bothSnapped: false };
+        const partnerSnap = stmtGetSnap.get(partnerId, snapDate) as DailySnap | undefined;
+        return { saved: true, bothSnapped: !!partnerSnap };
+      })();
+    },
+
+    deleteSnap(userId: string, snapDate: string): void {
+      stmtDeleteSnap.run(userId, snapDate);
     },
 
     getSnap(userId: string, snapDate: string): DailySnap | undefined {

@@ -79,9 +79,13 @@ export function startScheduler(dbOps: DbOps, pushFn: SendPushFn): void {
 
 async function broadcastPush(dbOps: DbOps, pushFn: SendPushFn, type: string): Promise<void> {
   const tokens = dbOps.getAllPairedUserTokens();
-  for (const { device_token } of tokens) {
-    await pushFn(device_token, type, '');
-  }
+  // Concurrent dispatch — @parse/node-apn uses HTTP/2 multiplexing so many
+  // pushes share one connection. Serial await would let a single slow /
+  // dead token stall the entire broadcast and overflow the 60s tick window
+  // once the user count grows.
+  await Promise.allSettled(
+    tokens.map(({ device_token }) => pushFn(device_token, type, ''))
+  );
 }
 
 async function checkCapsuleUnlocks(dbOps: DbOps, pushFn: SendPushFn): Promise<void> {
