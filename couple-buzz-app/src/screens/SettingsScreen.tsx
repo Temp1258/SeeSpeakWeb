@@ -20,6 +20,7 @@ import { api } from '../services/api';
 import { storage } from '../utils/storage';
 import WeeklyReportCard from '../components/WeeklyReportCard';
 import StatsCard from '../components/StatsCard';
+import DeviceListCard from '../components/DeviceListCard';
 import { SpringPressable } from '../components/SpringPressable';
 
 type Reloadable = { reload: () => Promise<void> };
@@ -43,7 +44,14 @@ const TIMEZONES = [
 
 type ModalTarget = 'my' | 'partner' | null;
 
-export default function SettingsScreen() {
+interface Props {
+  // App.tsx hands this in so a self-revoke from DeviceListCard can pop
+  // back to SetupScreen without each component re-implementing the
+  // clearAll → state-swap flow.
+  onSelfRevoked: () => void;
+}
+
+export default function SettingsScreen({ onSelfRevoked }: Props) {
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [timezone, setTimezone] = useState('');
@@ -101,6 +109,7 @@ export default function SettingsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const weeklyRef = useRef<Reloadable>(null);
   const statsRef = useRef<Reloadable>(null);
+  const devicesRef = useRef<Reloadable>(null);
   // Scroll-bound fade — see UsScreen.
   const scrollY = useRef(new Animated.Value(0)).current;
   const fadeOpacity = scrollY.interpolate({
@@ -116,6 +125,7 @@ export default function SettingsScreen() {
         loadStatus(),
         weeklyRef.current?.reload(),
         statsRef.current?.reload(),
+        devicesRef.current?.reload(),
       ]);
     } finally {
       setRefreshing(false);
@@ -398,6 +408,10 @@ export default function SettingsScreen() {
         </TouchableOpacity>
       </View>
 
+      <View style={styles.devicesBlock}>
+        <DeviceListCard ref={devicesRef} onSelfRevoked={onSelfRevoked} />
+      </View>
+
       {partnerId ? (
         <View style={styles.unpairBlock}>
           <SpringPressable
@@ -678,6 +692,9 @@ const styles = StyleSheet.create({
   tzOffset: {
     fontSize: 14,
     color: COLORS.textLight,
+  },
+  devicesBlock: {
+    marginTop: 32,
   },
   unpairBlock: {
     alignItems: 'center',

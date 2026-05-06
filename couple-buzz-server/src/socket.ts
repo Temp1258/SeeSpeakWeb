@@ -6,6 +6,10 @@ import { pushToUser, type SendPushFn } from './push';
 
 interface Ticket {
   userId: string;
+  // Optional: legacy access tokens (no sid) → ws-ticket has no sid → the
+  // resulting socket can't be force-disconnected by /sessions/:sid.
+  // Acceptable for the brief 15min legacy compat window post-deploy.
+  sessionId?: string;
   expiresAt: number;
 }
 
@@ -26,6 +30,11 @@ interface CouplePresence {
 
 const tickets = new Map<string, Ticket>();
 const presenceMap = new Map<string, CouplePresence>();
+// session_id → set of live socket ids. Lets /sessions/:sid DELETE drop
+// any socket that belongs to the just-revoked session. Sockets without
+// a session_id (legacy compat) aren't tracked here — they continue to
+// receive events until they naturally drop.
+const socketsBySession = new Map<string, Set<string>>();
 // Captured at setupSocket time so other modules (e.g. routes.ts) can broadcast
 // to a couple's room without a circular import or full DI plumbing.
 let ioRef: Server | null = null;
@@ -81,10 +90,23 @@ function coupleKey(a: string, b: string): string {
   return [a, b].sort().join(':');
 }
 
-export function createWsTicket(userId: string): string {
+export function createWsTicket(userId: string, sessionId?: string): string {
   const ticket = crypto.randomBytes(32).toString('hex');
-  tickets.set(ticket, { userId, expiresAt: Date.now() + 30000 });
+  tickets.set(ticket, { userId, sessionId, expiresAt: Date.now() + 30000 });
   return ticket;
+}
+
+// Force-disconnect every live socket bound to the given session_id.
+// Called by /sessions/:sid DELETE so a force-logged-out device can't
+// keep streaming presence/touch events from the partner via an
+// already-established connection.
+export function disconnectSession(sessionId: string): void {
+  if (!ioRef) return;
+  const ids = socketsBySession.get(sessionId);
+  if (!ids) return;
+  for (const id of [...ids]) {
+    ioRef.sockets.sockets.get(id)?.disconnect(true);
+  }
 }
 
 export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: SendPushFn): Server {
@@ -115,6 +137,7 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: SendP
 
     tickets.delete(ticket);
     socket.data.userId = stored.userId;
+    socket.data.sessionId = stored.sessionId;
     next();
   });
 
@@ -156,6 +179,18 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: SendP
       presence.sockets.set(userId, mySet);
     }
     mySet.add(socket.id);
+
+    // Track socket→session for force-logout. Skip if the ticket carried
+    // no session_id (legacy compat path).
+    const sessionId = socket.data.sessionId as string | undefined;
+    if (sessionId) {
+      let sessSet = socketsBySession.get(sessionId);
+      if (!sessSet) {
+        sessSet = new Set();
+        socketsBySession.set(sessionId, sessSet);
+      }
+      sessSet.add(socket.id);
+    }
     // This user is back online — they're seeing the partner directly, so any
     // pending pat tally for them resets to zero.
     presence.patUnread.set(userId, 0);
@@ -261,6 +296,17 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: SendP
         set.delete(socket.id);
         if (set.size === 0) {
           presence.sockets.delete(userId);
+        }
+      }
+
+      // Drop the socket→session tracking row too, otherwise stale ids
+      // accumulate forever and disconnectSession iterates ghosts.
+      const sid = socket.data.sessionId as string | undefined;
+      if (sid) {
+        const sessSet = socketsBySession.get(sid);
+        if (sessSet) {
+          sessSet.delete(socket.id);
+          if (sessSet.size === 0) socketsBySession.delete(sid);
         }
       }
 

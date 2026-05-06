@@ -5,7 +5,7 @@ import fs from 'fs';
 import crypto, { randomInt } from 'crypto';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
-import { createWsTicket, disconnectCouple, emitToCouple, isUserOnline } from './socket';
+import { createWsTicket, disconnectCouple, disconnectSession, emitToCouple, isUserOnline } from './socket';
 import { pushToUser } from './push';
 import type { SendPushFn } from './push';
 import {
@@ -239,14 +239,48 @@ function parseId(value: string): number | null {
   return isNaN(n) ? null : n;
 }
 
-function issueTokens(dbOps: DbOps, userId: string, tokenVersion: number) {
-  const accessToken = generateAccessToken(userId, tokenVersion);
+function parseDeviceInfo(body: { device?: unknown }): import('./db').DeviceInfo | undefined {
+  const d = body.device;
+  if (!d || typeof d !== 'object') return undefined;
+  // Per-field length cap so a hostile / glitchy client can't blow up the
+  // device-list rendering with a 100KB string. 80 chars is enough for
+  // "Steve's iPhone 15 Pro Max".
+  const cap = (v: unknown): string | null => {
+    if (typeof v !== 'string') return null;
+    const trimmed = v.trim();
+    return trimmed ? trimmed.slice(0, 80) : null;
+  };
+  const obj = d as Record<string, unknown>;
+  return {
+    name: cap(obj.name),
+    model: cap(obj.model),
+    os: cap(obj.os),
+    app_version: cap(obj.app_version),
+  };
+}
+
+function issueTokens(
+  dbOps: DbOps,
+  userId: string,
+  tokenVersion: number,
+  deviceInfo?: import('./db').DeviceInfo,
+  isPrimary?: boolean,
+) {
+  const sessionId = crypto.randomUUID();
   const refreshToken = generateRefreshToken();
   const expiresAt = getRefreshTokenExpiresAt();
 
-  dbOps.insertRefreshToken(userId, hashToken(refreshToken), expiresAt);
+  dbOps.insertRefreshToken(
+    userId,
+    hashToken(refreshToken),
+    expiresAt,
+    sessionId,
+    deviceInfo,
+    isPrimary,
+  );
 
-  return { access_token: accessToken, refresh_token: refreshToken };
+  const accessToken = generateAccessToken(userId, tokenVersion, sessionId);
+  return { access_token: accessToken, refresh_token: refreshToken, session_id: sessionId };
 }
 
 export function createPublicRouter(dbOps: DbOps): Router {
@@ -277,14 +311,20 @@ export function createPublicRouter(dbOps: DbOps): Router {
     const userTz = (timezone && isValidTimezone(timezone)) ? timezone : 'Asia/Shanghai';
     dbOps.createUser(userId, name.trim(), passwordHash, pairCode, userTz);
 
+    const user = dbOps.getUser(userId)!;
+    // Brand-new account: this is the only device → claim primary so the
+    // device-list always has someone able to manage other devices later.
+    const deviceInfo = parseDeviceInfo(req.body);
+    const { access_token, refresh_token, session_id } = issueTokens(
+      dbOps, userId, user.token_version, deviceInfo, true,
+    );
+
     if (device_token) {
       dbOps.setDeviceToken(userId, device_token);
+      dbOps.attachDeviceTokenToSession(device_token, session_id);
     }
 
-    const user = dbOps.getUser(userId)!;
-    const tokens = issueTokens(dbOps, userId, user.token_version);
-
-    res.json({ user_id: userId, ...tokens });
+    res.json({ user_id: userId, access_token, refresh_token });
   });
 
   // POST /api/login — login with ID + password
@@ -307,11 +347,26 @@ export function createPublicRouter(dbOps: DbOps): Router {
       return res.status(401).json({ error: 'Invalid ID or password' });
     }
 
+    // Login on a new device: mark primary only if the user has no
+    // primary right now (e.g. they only had legacy/sidless tokens, or
+    // their previous primary was force-revoked). Otherwise leave the
+    // existing primary alone — the user can promote this device manually
+    // from Settings.
+    const hasPrimary = dbOps
+      .listSessionsForUser(user.id, '')
+      .some((s) => s.is_primary);
+    const deviceInfo = parseDeviceInfo(req.body);
+    const { access_token, refresh_token, session_id } = issueTokens(
+      dbOps, user.id, user.token_version, deviceInfo, !hasPrimary,
+    );
+
     if (device_token) {
+      // Bind this APNs token to the just-issued session — Step 3
+      // guarantees: revoking a session also drops its push registration.
       dbOps.setDeviceToken(user.id, device_token);
+      dbOps.attachDeviceTokenToSession(device_token, session_id);
     }
 
-    const tokens = issueTokens(dbOps, user.id, user.token_version);
     const partnerName = user.partner_id ? dbOps.getUser(user.partner_id)?.name ?? null : null;
 
     // Include `name` so the client can persist the user's own nickname after
@@ -319,7 +374,7 @@ export function createPublicRouter(dbOps: DbOps): Router {
     // user navigates to Settings and saves — every screen that displays the
     // user's name (MailboxCard, InboxScreen, TimeCapsuleCard, HistoryScreen)
     // would fall back to "我" in the meantime.
-    res.json({ user_id: user.id, name: user.name, partner_name: partnerName, ...tokens });
+    res.json({ user_id: user.id, name: user.name, partner_name: partnerName, access_token, refresh_token });
   });
 
   // POST /api/auth/refresh — public, uses refresh token
@@ -357,23 +412,33 @@ export function createPublicRouter(dbOps: DbOps): Router {
       }
     }
 
+    // Bug-13 fix: a force-revoked session must NOT be revivable via its
+    // still-stored refresh token. Reject before issuing a new pair.
+    if (stored.revoked) {
+      return res.status(401).json({ error: 'Session revoked', code: 'session_revoked' });
+    }
+
     const user = dbOps.getUser(stored.user_id);
     if (!user) {
       dbOps.deleteRefreshToken(tokenHash);
       return res.status(401).json({ error: 'User not found' });
     }
 
-    // Issue a new pair. The old hash is marked superseded but kept around
-    // for the 10s grace window so a network-glitch retry can repeat this
-    // path and get yet another fresh pair instead of being booted out.
-    const accessToken = generateAccessToken(user.id, user.token_version);
+    // Issue a new pair on the SAME session_id (Bug-1 fix: rotate must
+    // preserve session continuity, otherwise every refresh would create
+    // a new "phantom session" in the device list). Old hash is marked
+    // superseded but kept around for the 10s grace window so a network-
+    // glitch retry can repeat this path.
+    const sessionId = stored.session_id || crypto.randomUUID();
     const refreshToken = generateRefreshToken();
     const expiresAt = getRefreshTokenExpiresAt();
-    dbOps.rotateRefreshToken(tokenHash, user.id, hashToken(refreshToken), expiresAt);
+    dbOps.rotateRefreshToken(tokenHash, user.id, hashToken(refreshToken), expiresAt, sessionId);
+    dbOps.touchSessionLastActive(sessionId);
     // Opportunistic cleanup of expired / grace-elapsed rows. Cheap because
     // refresh_tokens stays small; no separate cron needed.
     dbOps.pruneRefreshTokens();
 
+    const accessToken = generateAccessToken(user.id, user.token_version, sessionId);
     res.json({ access_token: accessToken, refresh_token: refreshToken });
   });
 
@@ -1915,7 +1980,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const ticket = createWsTicket(userId);
+    const ticket = createWsTicket(userId, req.sessionId);
     res.json({ ticket, expires_in: 30 });
   });
 
@@ -2278,22 +2343,91 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true });
   });
 
-  // POST /api/logout
+  // POST /api/logout — single-session logout. Drops only the current
+  // session's refresh row + device_tokens row, leaves the user's other
+  // sessions intact. To kill every session at once (e.g. password
+  // reset), POST /api/logout-all instead.
   router.post('/logout', (req: Request, res: Response) => {
     const userId = req.userId!;
+    const sessionId = req.sessionId;
 
-    const user = dbOps.getUser(userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+    if (sessionId) {
+      dbOps.revokeSession(sessionId);
+      disconnectSession(sessionId);
+      dbOps.promoteFallbackPrimary(userId);
+    } else {
+      // Legacy access token without sid — fall back to the old behavior.
+      // Once all clients refresh post-deploy, this branch is dead.
+      dbOps.clearDeviceToken(userId);
+      dbOps.deleteAllRefreshTokens(userId);
+      dbOps.incrementTokenVersion(userId);
     }
 
-    // Clear device token
-    dbOps.clearDeviceToken(userId);
+    res.json({ success: true });
+  });
 
-    // Revoke all tokens
+  // POST /api/logout-all — explicit "kick every device". Increments
+  // token_version so even legacy/sidless tokens die instantly.
+  router.post('/logout-all', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    dbOps.clearDeviceToken(userId);
     dbOps.deleteAllRefreshTokens(userId);
     dbOps.incrementTokenVersion(userId);
+    res.json({ success: true });
+  });
 
+  // GET /api/sessions — list all active devices for this user.
+  router.get('/sessions', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const sessions = dbOps.listSessionsForUser(userId, req.sessionId ?? '');
+    res.json({ sessions });
+  });
+
+  // POST /api/sessions/:sid/primary — promote the named session to
+  // primary. Self-promotion always allowed; promoting a non-self session
+  // requires the requester to currently be primary (otherwise any device
+  // could quietly seize control of the device list).
+  router.post('/sessions/:sid/primary', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const sid = String(req.params.sid);
+    const target = dbOps.getActiveSessionForUser(userId, sid);
+    if (!target) return res.status(404).json({ error: 'Session not found' });
+
+    if (sid !== req.sessionId) {
+      const me = req.sessionId ? dbOps.getActiveSessionForUser(userId, req.sessionId) : undefined;
+      if (!me || me.is_primary !== 1) {
+        return res.status(403).json({ error: 'Only the primary device can transfer primary' });
+      }
+    }
+    dbOps.setPrimarySession(userId, sid);
+    res.json({ success: true });
+  });
+
+  // DELETE /api/sessions/:sid — force-logout the named session.
+  // Self-revoke always allowed; revoking a different session requires
+  // the requester to be primary.
+  router.delete('/sessions/:sid', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const sid = String(req.params.sid);
+    const target = dbOps.getActiveSessionForUser(userId, sid);
+    if (!target) return res.status(404).json({ error: 'Session not found' });
+
+    const isSelf = sid === req.sessionId;
+    if (!isSelf) {
+      const me = req.sessionId ? dbOps.getActiveSessionForUser(userId, req.sessionId) : undefined;
+      if (!me || me.is_primary !== 1) {
+        return res.status(403).json({ error: 'Only the primary device can sign out other devices' });
+      }
+    }
+
+    const ok = dbOps.revokeSession(sid);
+    if (!ok) return res.status(404).json({ error: 'Session already inactive' });
+    disconnectSession(sid);
+    // If the user just nuked their own primary, promote whoever's next
+    // so the device list always has someone with kick rights.
+    if (isSelf && target.is_primary === 1) {
+      dbOps.promoteFallbackPrimary(userId);
+    }
     res.json({ success: true });
   });
 

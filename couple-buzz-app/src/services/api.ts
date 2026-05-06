@@ -1,14 +1,21 @@
 import { API_URL } from '../constants';
 import { storage } from '../utils/storage';
+import { getDeviceInfo } from '../utils/device';
 
 // Thrown only when the server has definitively rejected the session
 // (401 even after a refresh attempt). Network failures, DNS errors,
 // 5xx responses, and wrong API URLs throw plain Error — callers must
 // not treat those as "user is logged out".
 export class AuthError extends Error {
-  constructor(message = 'Authentication failed') {
+  // `code` lets the UI distinguish a force-logout from another device
+  // ("session_revoked") from a generic auth failure (refresh-token
+  // expired naturally, password changed, etc). App.tsx swaps the
+  // re-login screen's headline based on this.
+  code?: string;
+  constructor(message = 'Authentication failed', code?: string) {
     super(message);
     this.name = 'AuthError';
+    this.code = code;
   }
 }
 
@@ -19,7 +26,10 @@ export class AuthError extends Error {
 //   'transient'— network failure, 5xx, or malformed response. Caller treats
 //                this as a normal request failure and does NOT log out — a
 //                Wi-Fi blip on cold launch must not boot a logged-in user.
-type RefreshOutcome = 'success' | 'auth' | 'transient';
+// `auth-revoked` is a stricter form of `auth` — the server told us the
+// session was force-logged-out from another device, so the UI message
+// should reflect that instead of the generic "you've been signed out".
+type RefreshOutcome = 'success' | 'auth' | 'auth-revoked' | 'transient';
 
 // Default network timeout. Without this, RN's fetch can hang indefinitely
 // on weak networks (subway, elevator, transient TLS stalls), leaving the UI
@@ -113,7 +123,13 @@ async function refreshAccessToken(): Promise<RefreshOutcome> {
       // and 5xx are all treated as transient — we must NOT log the user
       // out for a rate-limited refresh: that would loop them back to
       // SetupScreen the moment the auth limiter saturated.
-      if (res.status === 401 || res.status === 403) return 'auth';
+      if (res.status === 401 || res.status === 403) {
+        try {
+          const body = await res.json();
+          if (body?.code === 'session_revoked') return 'auth-revoked';
+        } catch {}
+        return 'auth';
+      }
       return 'transient';
     } catch {
       return 'transient';
@@ -156,6 +172,7 @@ async function request<T>(path: string, options: RequestInit = {}, requiresAuth 
   // Auto-refresh on 401
   if (res.status === 401 && requiresAuth) {
     const outcome = await refreshAccessToken();
+    if (outcome === 'auth-revoked') throw new AuthError('Session revoked', 'session_revoked');
     if (outcome === 'success') {
       const newToken = await storage.getAccessToken();
       headers['Authorization'] = `Bearer ${newToken}`;
@@ -430,6 +447,18 @@ export interface BucketItemResponse {
   created_at: string;
 }
 
+export interface SessionView {
+  session_id: string;
+  device_name: string | null;
+  device_model: string | null;
+  device_os: string | null;
+  app_version: string | null;
+  last_active: string | null;
+  created_at: string;
+  is_primary: boolean;
+  is_current: boolean;
+}
+
 export interface SnapTodayResponse {
   snap_date: string;
   my_snapped: boolean;
@@ -502,14 +531,23 @@ export const api = {
   register(name: string, password: string): Promise<RegisterResponse> {
     return request('/api/register', {
       method: 'POST',
-      body: JSON.stringify({ name, password, timezone: getDeviceTimezone() }),
+      body: JSON.stringify({
+        name,
+        password,
+        timezone: getDeviceTimezone(),
+        device: getDeviceInfo(),
+      }),
     }, false);
   },
 
   login(userId: string, password: string): Promise<LoginResponse> {
     return request('/api/login', {
       method: 'POST',
-      body: JSON.stringify({ user_id: userId, password }),
+      body: JSON.stringify({
+        user_id: userId,
+        password,
+        device: getDeviceInfo(),
+      }),
     }, false);
   },
 
@@ -729,6 +767,7 @@ export const api = {
     // "Network error" with no auto-recovery.
     if (firstThrew) {
       const outcome = await refreshAccessToken();
+      if (outcome === 'auth-revoked') throw new AuthError('Session revoked', 'session_revoked');
       if (outcome === 'auth') throw new AuthError();
       if (outcome !== 'success') throw new Error('Network error');
       try {
@@ -747,6 +786,8 @@ export const api = {
           throw new Error('Network error');
         }
         if (res.status === 401) throw new AuthError();
+      } else if (outcome === 'auth-revoked') {
+        throw new AuthError('Session revoked', 'session_revoked');
       } else if (outcome === 'auth') {
         throw new AuthError();
       } else {
@@ -769,6 +810,25 @@ export const api = {
   },
   dailyReaction(type: 'question' | 'snap', reaction: 'up' | 'down'): Promise<{ success: boolean; reaction: 'up' | 'down' }> {
     return request('/api/daily-reaction', { method: 'POST', body: JSON.stringify({ type, reaction }) });
+  },
+
+  // Sessions / multi-device login.
+  listSessions(): Promise<{ sessions: SessionView[] }> {
+    return request('/api/sessions');
+  },
+  // Promote the named session to primary. Server-side guard: only the
+  // current primary can transfer primary to a different session.
+  promoteSession(sessionId: string): Promise<{ success: boolean }> {
+    return request(`/api/sessions/${encodeURIComponent(sessionId)}/primary`, { method: 'POST' });
+  },
+  // Force-logout. Self-revoke always allowed; revoking another session
+  // requires the requester to be primary (server enforces; we mirror in
+  // the UI by hiding the action on non-primary devices).
+  revokeSession(sessionId: string): Promise<{ success: boolean }> {
+    return request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+  },
+  logout(): Promise<{ success: boolean }> {
+    return request('/api/logout', { method: 'POST' });
   },
 
   // 每日一帖 (sticky notes)

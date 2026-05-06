@@ -515,6 +515,224 @@ describe('PUT /api/device-token', () => {
   });
 });
 
+describe('Sessions / multi-device login', () => {
+  // Helper: log in same user from a "second phone" so we end up with two
+  // sessions for one account.
+  async function loginAsSecondDevice(app: express.Express, userId: string) {
+    const res = await request(app)
+      .post('/api/login')
+      .send({
+        user_id: userId,
+        password: 'test1234',
+        device: { name: 'iPad Pro', model: 'iPad13,8', os: 'iPadOS 17.2' },
+      });
+    return res.body as { access_token: string; refresh_token: string };
+  }
+
+  it('register and login produce listable sessions, first one is primary', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    const res = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.sessions).toHaveLength(1);
+    expect(res.body.sessions[0].is_primary).toBe(true);
+    expect(res.body.sessions[0].is_current).toBe(true);
+
+    const second = await loginAsSecondDevice(app, alice.user_id);
+    const res2 = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(res2.body.sessions).toHaveLength(2);
+    // First device retains primary; second device is non-primary.
+    const primaries = res2.body.sessions.filter((s: { is_primary: boolean }) => s.is_primary);
+    expect(primaries).toHaveLength(1);
+    // From the first device's perspective, the first session is "current"
+    // and is also the primary.
+    expect(primaries[0].is_current).toBe(true);
+
+    // From the second device's perspective, its own session is the current.
+    const fromSecond = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${second.access_token}`);
+    const currentFromSecond = fromSecond.body.sessions.find((s: { is_current: boolean }) => s.is_current);
+    expect(currentFromSecond.is_primary).toBe(false);
+  });
+
+  it('non-primary device cannot revoke another session', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const second = await loginAsSecondDevice(app, alice.user_id);
+
+    // Primary's session_id (current from the first phone)
+    const list = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const primarySid = list.body.sessions.find((s: { is_primary: boolean }) => s.is_primary).session_id;
+
+    // Second (non-primary) tries to kick the primary — must 403.
+    const res = await request(app)
+      .delete(`/api/sessions/${primarySid}`)
+      .set('Authorization', `Bearer ${second.access_token}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('primary can force-logout another session and that session immediately fails auth', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const second = await loginAsSecondDevice(app, alice.user_id);
+
+    // Primary perspective: find the second device's sid.
+    const list = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const otherSid = list.body.sessions.find((s: { is_current: boolean }) => !s.is_current).session_id;
+
+    const kickRes = await request(app)
+      .delete(`/api/sessions/${otherSid}`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(kickRes.status).toBe(200);
+
+    // Second device's access token should now bounce with code: session_revoked.
+    const probe = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${second.access_token}`);
+    expect(probe.status).toBe(401);
+    expect(probe.body.code).toBe('session_revoked');
+
+    // And its refresh token should also be rejected.
+    const refresh = await request(app)
+      .post('/api/auth/refresh')
+      .send({ refresh_token: second.refresh_token });
+    expect(refresh.status).toBe(401);
+    expect(refresh.body.code).toBe('session_revoked');
+  });
+
+  it('self-revoke: deleting own session always allowed; primary auto-transfers', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const second = await loginAsSecondDevice(app, alice.user_id);
+
+    // Get my (first device's) sid.
+    const list = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const mySid = list.body.sessions.find((s: { is_current: boolean }) => s.is_current).session_id;
+
+    const res = await request(app)
+      .delete(`/api/sessions/${mySid}`)
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(res.status).toBe(200);
+
+    // Second device should now be promoted to primary.
+    const after = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${second.access_token}`);
+    expect(after.body.sessions).toHaveLength(1);
+    expect(after.body.sessions[0].is_primary).toBe(true);
+  });
+
+  it('primary transfer via POST /sessions/:sid/primary', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const second = await loginAsSecondDevice(app, alice.user_id);
+
+    const list = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const otherSid = list.body.sessions.find((s: { is_current: boolean }) => !s.is_current).session_id;
+
+    // Primary promotes the other device.
+    await request(app)
+      .post(`/api/sessions/${otherSid}/primary`)
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .expect(200);
+
+    const after = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${second.access_token}`);
+    const newPrimary = after.body.sessions.find((s: { is_primary: boolean }) => s.is_primary);
+    expect(newPrimary.session_id).toBe(otherSid);
+    // Exactly one primary at any time.
+    expect(after.body.sessions.filter((s: { is_primary: boolean }) => s.is_primary)).toHaveLength(1);
+  });
+
+  it('refresh preserves session_id (rotation does NOT spawn ghost sessions)', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    const before = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    const sidBefore = before.body.sessions[0].session_id;
+
+    const refreshed = await request(app)
+      .post('/api/auth/refresh')
+      .send({ refresh_token: alice.refresh_token });
+    expect(refreshed.status).toBe(200);
+
+    const after = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${refreshed.body.access_token}`);
+    expect(after.body.sessions).toHaveLength(1);
+    expect(after.body.sessions[0].session_id).toBe(sidBefore);
+  });
+
+  it('refresh-grace replay does NOT create a duplicate session row', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    // First rotate.
+    const r1 = await request(app)
+      .post('/api/auth/refresh')
+      .send({ refresh_token: alice.refresh_token });
+    expect(r1.status).toBe(200);
+
+    // Replay original token within grace — server hands back another
+    // fresh pair and supersedes the orphaned new1.
+    const r2 = await request(app)
+      .post('/api/auth/refresh')
+      .send({ refresh_token: alice.refresh_token });
+    expect(r2.status).toBe(200);
+
+    const list = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${r2.body.access_token}`);
+    expect(list.body.sessions).toHaveLength(1);
+  });
+
+  it('logout drops only the current session; other sessions remain logged in', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const second = await loginAsSecondDevice(app, alice.user_id);
+
+    await request(app)
+      .post('/api/logout')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .expect(200);
+
+    // Second device still works.
+    const stillOk = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${second.access_token}`);
+    expect(stillOk.status).toBe(200);
+  });
+
+  it('login on a second device does NOT bump token_version (other sessions stay valid)', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    await loginAsSecondDevice(app, alice.user_id);
+
+    // Original device should still authenticate fine.
+    const probe = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(probe.status).toBe(200);
+  });
+});
+
 describe('Couples lifecycle (pair_id)', () => {
   it('pair generates a 10-char pair_id and unpair sets ended_at', async () => {
     const { app, dbOps } = createTestApp();

@@ -3,11 +3,14 @@ import jwt from 'jsonwebtoken';
 import crypto, { randomInt } from 'crypto';
 import { DbOps } from './db';
 
-// Extend Express Request to include userId
+// Extend Express Request to include userId + sessionId
 declare global {
   namespace Express {
     interface Request {
       userId?: string;
+      // Set by authMiddleware when the access token carries a sid.
+      // Undefined for legacy compat tokens (issued before Step 3).
+      sessionId?: string;
     }
   }
 }
@@ -15,6 +18,12 @@ declare global {
 interface JwtPayload {
   sub: string;
   tv: number;
+  // sid (session id) ties this access token to one device-bound row in
+  // refresh_tokens. Auth middleware rejects access tokens whose session
+  // has been revoked (force-logout). Optional for backwards compat with
+  // any in-flight legacy access tokens issued before sessions shipped —
+  // those are accepted as long as the user + token_version still match.
+  sid?: string;
   iat: number;
   exp: number;
 }
@@ -28,10 +37,13 @@ const JWT_SECRET: string = process.env.JWT_SECRET;
 const ACCESS_TOKEN_EXPIRY = '15m';
 const REFRESH_TOKEN_EXPIRY_DAYS = 90;
 
-export function generateAccessToken(userId: string, tokenVersion: number): string {
-  return jwt.sign({ sub: userId, tv: tokenVersion }, JWT_SECRET, {
-    expiresIn: ACCESS_TOKEN_EXPIRY,
-  });
+export function generateAccessToken(userId: string, tokenVersion: number, sessionId?: string): string {
+  const payload: { sub: string; tv: number; sid?: string } = {
+    sub: userId,
+    tv: tokenVersion,
+  };
+  if (sessionId) payload.sid = sessionId;
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: ACCESS_TOKEN_EXPIRY });
 }
 
 export function generateRefreshToken(): string {
@@ -116,9 +128,25 @@ export function createAuthMiddleware(dbOps: DbOps) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
-      // Check token version matches — allows instant revocation
+      // token_version mismatch = a global revoke happened (deleteAllRefresh
+      // path on /api/logout-all). Always rejects regardless of sid.
       if (user.token_version !== payload.tv) {
         return res.status(401).json({ error: 'Token revoked' });
+      }
+
+      // Session check. New tokens carry sid → must point to a still-
+      // active session row. Legacy tokens (no sid) skip this — they were
+      // issued before sessions shipped and remain valid for at most one
+      // access-token lifetime (15min) post-deploy, after which all
+      // clients refresh and start carrying sid.
+      if (payload.sid) {
+        if (!dbOps.isSessionActive(payload.sid, payload.sub)) {
+          // `code` lets the client distinguish a force-logout from a
+          // generic auth fail and surface "you've been logged out from
+          // another device" instead of just dumping back to setup.
+          return res.status(401).json({ error: 'Session revoked', code: 'session_revoked' });
+        }
+        req.sessionId = payload.sid;
       }
 
       req.userId = payload.sub;

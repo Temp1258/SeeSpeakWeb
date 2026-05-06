@@ -1,7 +1,7 @@
 import Database, { Database as DatabaseType } from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { randomInt } from 'crypto';
+import crypto, { randomInt } from 'crypto';
 
 const DEFAULT_DB_PATH = path.join(__dirname, '..', 'data', 'app.db');
 
@@ -117,6 +117,40 @@ export interface RefreshToken {
   // so a network failure mid-rotate doesn't strand the client.
   superseded_at: string | null;
   created_at: string;
+  // The logical session this row belongs to. Multiple non-superseded rows
+  // may share a session_id during the 10s rotation grace window; outside
+  // that window, exactly one row per (session_id, NULL superseded_at).
+  session_id: string;
+  device_name: string | null;
+  device_model: string | null;
+  device_os: string | null;
+  app_version: string | null;
+  last_active: string | null;
+  is_primary: number;
+  // Force-logout flips this. Auth middleware rejects access tokens whose
+  // sid maps to a revoked row instantly (no waiting for natural expiry).
+  revoked: number;
+}
+
+// Public-facing session row returned to /api/sessions consumers. Hides
+// token_hash + expires_at — clients only need to identify and label.
+export interface SessionView {
+  session_id: string;
+  device_name: string | null;
+  device_model: string | null;
+  device_os: string | null;
+  app_version: string | null;
+  last_active: string | null;
+  created_at: string;
+  is_primary: boolean;
+  is_current: boolean;
+}
+
+export interface DeviceInfo {
+  name?: string | null;
+  model?: string | null;
+  os?: string | null;
+  app_version?: string | null;
 }
 
 export interface Ritual {
@@ -284,6 +318,10 @@ export interface DbOps {
   // array if the user has no devices registered (push permission denied
   // or app never opened post-install).
   getDeviceTokensForUser(userId: string): string[];
+  // Bind an APNs token to a particular session so a /sessions DELETE
+  // can drop both atomically. Called right after register/login. No-op
+  // if the apns_token row was just deleted by another race.
+  attachDeviceTokenToSession(apnsToken: string, sessionId: string): void;
   // Badge / unread tracking — count of partner's actions newer than what this
   // user has marked as read. Used to drive the iOS app icon badge number.
   setLastReadActionId(userId: string, actionId: number): void;
@@ -299,21 +337,69 @@ export interface DbOps {
   // leak earlier-pair history.
   getHistory(pairId: string, limit: number): Action[];
   getHistoryReactions(pairId: string): Action[];
-  insertRefreshToken(userId: string, tokenHash: string, expiresAt: string): void;
+  // Issue a brand-new session at register/login time. Returns the
+  // generated session_id and whether this session was made primary
+  // (true iff the user had no other primary at the moment of insert —
+  // first device automatically claims primary).
+  insertRefreshToken(
+    userId: string,
+    tokenHash: string,
+    expiresAt: string,
+    sessionId: string,
+    deviceInfo?: DeviceInfo,
+    isPrimary?: boolean,
+  ): void;
   getRefreshToken(tokenHash: string): RefreshToken | undefined;
   deleteRefreshToken(tokenHash: string): void;
   // Rotate by marking the old hash as `superseded_at = now` and inserting
-  // a fresh token row. Old hash stays valid for a 10s grace window so a
-  // mid-rotation network failure doesn't lock the client out — the retry
-  // re-rotates and issues another fresh pair. Atomic in a transaction so
-  // a partial failure can't leak.
-  rotateRefreshToken(oldHash: string, userId: string, newHash: string, expiresAt: string): void;
+  // a fresh token row that inherits the existing session_id. Within the
+  // 10s grace window the old hash stays valid; outside, only the newest
+  // row of (session_id, NULL superseded_at) is current. Atomic.
+  rotateRefreshToken(
+    oldHash: string,
+    userId: string,
+    newHash: string,
+    expiresAt: string,
+    sessionId: string,
+  ): void;
   // Cleanup: drop expired tokens AND tokens whose grace window has
   // elapsed. Called opportunistically on every rotation; cheap when the
   // table is small.
   pruneRefreshTokens(): void;
   deleteAllRefreshTokens(userId: string): void;
   incrementTokenVersion(userId: string): void;
+
+  // Sessions API.
+  // True iff `sessionId` exists, belongs to `userId`, is not revoked,
+  // and is not yet expired. Auth middleware calls this on every request
+  // so it has to be a single indexed lookup.
+  isSessionActive(sessionId: string, userId: string): boolean;
+  // Public list of every still-valid session for a user. Filters out
+  // superseded (rotated-out) and revoked rows. Order: primary first,
+  // then most-recently-active.
+  listSessionsForUser(userId: string, currentSessionId: string): SessionView[];
+  // Atomically swap primary: only the named session becomes primary,
+  // every other session for the user becomes non-primary.
+  setPrimarySession(userId: string, sessionId: string): void;
+  // Force-logout. Marks the session revoked, drops its device_tokens,
+  // returns whether it succeeded (false → session not found / already
+  // revoked).
+  revokeSession(sessionId: string): boolean;
+  // Promote the most-recently-active surviving session to primary if no
+  // primary is currently set. Called when the user revokes their own
+  // primary session so the user isn't left with no primary.
+  promoteFallbackPrimary(userId: string): void;
+  // Bump last_active timestamp. Called from the refresh route (every
+  // 15min) and on socket connect so the device list shows roughly-
+  // current "last active" without per-request write amplification.
+  touchSessionLastActive(sessionId: string): void;
+  // Returns the session row for a given sid (or undefined). Used by
+  // routes to figure out the requester's session_id from JWT sub+sid.
+  getSession(sessionId: string): RefreshToken | undefined;
+  // Force-logout helper for socket.ts: returns the session_id paired
+  // with this access-token's refresh-token row; lets socket auth tag
+  // the socket so /sessions/:sid DELETE can drop it instantly.
+  getActiveSessionForUser(userId: string, sessionId: string): RefreshToken | undefined;
   getStreak(userId: string, partnerId: string): number;
   createImportantDate(userId: string, partnerId: string, pairId: string, title: string, date: string, recurring: boolean): ImportantDate;
   getImportantDates(pairId: string): ImportantDate[];
@@ -1062,6 +1148,86 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     db.exec('ALTER TABLE refresh_tokens ADD COLUMN superseded_at DATETIME DEFAULT NULL');
   }
 
+  // Migration: turn refresh_tokens into the session store. Each surviving
+  // refresh_token row IS a session; new columns describe the device that
+  // owns it and let users see/manage their logged-in devices. Idempotent
+  // — only adds missing columns.
+  const refreshCols2 = db.pragma('table_info(refresh_tokens)') as { name: string }[];
+  if (refreshCols2.length > 0 && !refreshCols2.some((c) => c.name === 'session_id')) {
+    db.exec("ALTER TABLE refresh_tokens ADD COLUMN session_id TEXT NOT NULL DEFAULT ''");
+  }
+  if (refreshCols2.length > 0 && !refreshCols2.some((c) => c.name === 'device_name')) {
+    db.exec('ALTER TABLE refresh_tokens ADD COLUMN device_name TEXT');
+  }
+  if (refreshCols2.length > 0 && !refreshCols2.some((c) => c.name === 'device_model')) {
+    db.exec('ALTER TABLE refresh_tokens ADD COLUMN device_model TEXT');
+  }
+  if (refreshCols2.length > 0 && !refreshCols2.some((c) => c.name === 'device_os')) {
+    db.exec('ALTER TABLE refresh_tokens ADD COLUMN device_os TEXT');
+  }
+  if (refreshCols2.length > 0 && !refreshCols2.some((c) => c.name === 'app_version')) {
+    db.exec('ALTER TABLE refresh_tokens ADD COLUMN app_version TEXT');
+  }
+  if (refreshCols2.length > 0 && !refreshCols2.some((c) => c.name === 'last_active')) {
+    db.exec('ALTER TABLE refresh_tokens ADD COLUMN last_active DATETIME');
+  }
+  if (refreshCols2.length > 0 && !refreshCols2.some((c) => c.name === 'is_primary')) {
+    db.exec('ALTER TABLE refresh_tokens ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0');
+  }
+  if (refreshCols2.length > 0 && !refreshCols2.some((c) => c.name === 'revoked')) {
+    db.exec('ALTER TABLE refresh_tokens ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Backfill: any pre-Step3 row has session_id = ''. Give it a fresh UUID
+  // so it's identifiable. Each row becomes its own session — including
+  // grace-window-superseded rows, but those will prune themselves after
+  // 10s and don't surface in any list.
+  const sidlessRows = db.prepare(
+    "SELECT id FROM refresh_tokens WHERE session_id = ''"
+  ).all() as { id: number }[];
+  if (sidlessRows.length > 0) {
+    const setSid = db.prepare('UPDATE refresh_tokens SET session_id = ? WHERE id = ?');
+    db.transaction(() => {
+      for (const r of sidlessRows) {
+        setSid.run(crypto.randomUUID(), r.id);
+      }
+    })();
+  }
+
+  // Backfill: per user, the most-recently-issued non-superseded, non-
+  // revoked row becomes the primary device. Idempotent (won't override an
+  // existing primary). Window function requires SQLite ≥ 3.25 — better-
+  // sqlite3 ships well past that.
+  db.exec(`
+    UPDATE refresh_tokens SET is_primary = 1
+    WHERE id IN (
+      SELECT id FROM (
+        SELECT id, user_id,
+          ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC, id DESC) AS rn
+        FROM refresh_tokens
+        WHERE superseded_at IS NULL AND revoked = 0
+      ) WHERE rn = 1
+    )
+    AND user_id NOT IN (
+      SELECT user_id FROM refresh_tokens WHERE is_primary = 1
+    )
+  `);
+
+  // Backfill: link existing device_tokens rows to their user's primary
+  // session. The chronology between APNs token registration and refresh
+  // token issuance is hard to reconstruct retroactively, so all of a
+  // user's existing device tokens snap to one session — the primary —
+  // which is also the one most likely to be live.
+  db.exec(`
+    UPDATE device_tokens SET session_id = (
+      SELECT session_id FROM refresh_tokens
+      WHERE user_id = device_tokens.user_id
+        AND is_primary = 1 AND superseded_at IS NULL AND revoked = 0
+      LIMIT 1
+    )
+    WHERE session_id IS NULL
+  `);
+
   // Migration: backfill device_tokens from the legacy users.device_token
   // single-valued column. INSERT OR IGNORE so re-runs are no-ops. Once
   // every user with a token has a corresponding device_tokens row, the
@@ -1398,6 +1564,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtGetDeviceTokensForUser = db.prepare(
     'SELECT apns_token FROM device_tokens WHERE user_id = ?'
   );
+  const stmtAttachDeviceTokenToSession = db.prepare(
+    'UPDATE device_tokens SET session_id = ? WHERE apns_token = ?'
+  );
   // Only advance last_read_action_id forward — never let a client roll it back
   // (e.g. an out-of-order request) and accidentally re-mark old messages unread.
   const stmtSetLastReadActionId = db.prepare(
@@ -1455,14 +1624,22 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     ORDER BY a.created_at DESC
     LIMIT 500
   `);
-  const stmtInsertRefreshToken = db.prepare(
-    'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'
-  );
+  const stmtInsertRefreshToken = db.prepare(`
+    INSERT INTO refresh_tokens (
+      user_id, token_hash, expires_at,
+      session_id, device_name, device_model, device_os, app_version,
+      last_active, is_primary
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+  `);
   const stmtGetRefreshToken = db.prepare('SELECT * FROM refresh_tokens WHERE token_hash = ?');
   const stmtDeleteRefreshToken = db.prepare('DELETE FROM refresh_tokens WHERE token_hash = ?');
   const stmtDeleteAllRefreshTokens = db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?');
-  const stmtMarkRefreshTokenSuperseded = db.prepare(
-    'UPDATE refresh_tokens SET superseded_at = CURRENT_TIMESTAMP WHERE token_hash = ? AND superseded_at IS NULL'
+  // Bug-2 fix: rotate supersedes ALL still-active rows of the same session
+  // before inserting the new one. Without this, a 10s-grace retry leaves
+  // both the original new row and the retry's new row active under the
+  // same session_id — /sessions would show duplicates.
+  const stmtMarkSessionSuperseded = db.prepare(
+    'UPDATE refresh_tokens SET superseded_at = CURRENT_TIMESTAMP WHERE session_id = ? AND superseded_at IS NULL'
   );
   // datetime() normalizes both formats so we can compare an ISO param
   // against the SQLite-default timestamp the column was written with.
@@ -1472,6 +1649,64 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtIncrementTokenVersion = db.prepare(
     'UPDATE users SET token_version = token_version + 1 WHERE id = ?'
   );
+
+  // Session management statements.
+  const stmtCheckSessionActive = db.prepare(`
+    SELECT 1 FROM refresh_tokens
+    WHERE session_id = ? AND user_id = ?
+      AND superseded_at IS NULL
+      AND revoked = 0
+      AND datetime(expires_at) >= datetime('now')
+    LIMIT 1
+  `);
+  const stmtListSessions = db.prepare(`
+    SELECT session_id, device_name, device_model, device_os, app_version,
+           last_active, created_at, is_primary
+    FROM refresh_tokens
+    WHERE user_id = ?
+      AND superseded_at IS NULL
+      AND revoked = 0
+      AND datetime(expires_at) >= datetime('now')
+    ORDER BY is_primary DESC, COALESCE(last_active, created_at) DESC
+  `);
+  const stmtClearAllPrimary = db.prepare(
+    'UPDATE refresh_tokens SET is_primary = 0 WHERE user_id = ?'
+  );
+  const stmtSetPrimary = db.prepare(`
+    UPDATE refresh_tokens SET is_primary = 1
+    WHERE session_id = ? AND user_id = ?
+      AND superseded_at IS NULL AND revoked = 0
+  `);
+  const stmtRevokeSession = db.prepare(`
+    UPDATE refresh_tokens SET revoked = 1
+    WHERE session_id = ? AND revoked = 0
+  `);
+  const stmtDeleteDeviceTokensBySession = db.prepare(
+    'DELETE FROM device_tokens WHERE session_id = ?'
+  );
+  const stmtSessionHasPrimary = db.prepare(`
+    SELECT 1 FROM refresh_tokens
+    WHERE user_id = ? AND is_primary = 1
+      AND superseded_at IS NULL AND revoked = 0
+    LIMIT 1
+  `);
+  const stmtPickFallbackPrimary = db.prepare(`
+    SELECT session_id FROM refresh_tokens
+    WHERE user_id = ?
+      AND superseded_at IS NULL AND revoked = 0
+      AND datetime(expires_at) >= datetime('now')
+    ORDER BY COALESCE(last_active, created_at) DESC
+    LIMIT 1
+  `);
+  const stmtTouchSession = db.prepare(`
+    UPDATE refresh_tokens SET last_active = CURRENT_TIMESTAMP
+    WHERE session_id = ? AND superseded_at IS NULL AND revoked = 0
+  `);
+  const stmtGetSession = db.prepare(`
+    SELECT * FROM refresh_tokens
+    WHERE session_id = ? AND superseded_at IS NULL AND revoked = 0
+    LIMIT 1
+  `);
 
   // Streak day boundary aligns with the BJT 7am session boundary used by
   // daily-question / daily-snap (UTC 23h = BJT 7am). Without the +1h shift,
@@ -2019,6 +2254,10 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return rows.map((r) => r.apns_token);
     },
 
+    attachDeviceTokenToSession(apnsToken, sessionId): void {
+      stmtAttachDeviceTokenToSession.run(sessionId, apnsToken);
+    },
+
     setLastReadActionId(userId: string, actionId: number): void {
       stmtSetLastReadActionId.run(actionId, userId, actionId);
     },
@@ -2069,8 +2308,23 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return getReactionsStmt.all(pairId) as Action[];
     },
 
-    insertRefreshToken(userId: string, tokenHash: string, expiresAt: string): void {
-      stmtInsertRefreshToken.run(userId, tokenHash, expiresAt);
+    insertRefreshToken(userId, tokenHash, expiresAt, sessionId, deviceInfo, isPrimary): void {
+      // First device for the user always gets primary if caller didn't
+      // specify; subsequent devices default to non-primary unless caller
+      // explicitly promotes (e.g. login on a brand-new phone could be
+      // either, today we leave it to the user to promote manually).
+      const flag = isPrimary ? 1 : 0;
+      stmtInsertRefreshToken.run(
+        userId,
+        tokenHash,
+        expiresAt,
+        sessionId,
+        deviceInfo?.name ?? null,
+        deviceInfo?.model ?? null,
+        deviceInfo?.os ?? null,
+        deviceInfo?.app_version ?? null,
+        flag,
+      );
     },
 
     getRefreshToken(tokenHash: string): RefreshToken | undefined {
@@ -2081,13 +2335,39 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       stmtDeleteRefreshToken.run(tokenHash);
     },
 
-    rotateRefreshToken(oldHash, userId, newHash, expiresAt): void {
-      // Mark old as superseded (no-op if already superseded — keeps the
-      // original superseded_at so the grace window doesn't keep extending
-      // on retries) and insert the new hash atomically.
+    rotateRefreshToken(oldHash, userId, newHash, expiresAt, sessionId): void {
+      // Bug-1 + Bug-2 fix: supersede ALL still-active rows for this
+      // session (covers old hash + any orphan from a previous mid-rotate
+      // retry) before inserting the new row. The new row inherits the
+      // session's metadata (device info + primary flag) by reading the
+      // most-recent row for the same session in a single transaction.
       db.transaction(() => {
-        stmtMarkRefreshTokenSuperseded.run(oldHash);
-        stmtInsertRefreshToken.run(userId, newHash, expiresAt);
+        const prior = db.prepare(`
+          SELECT device_name, device_model, device_os, app_version, is_primary
+          FROM refresh_tokens
+          WHERE session_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        `).get(sessionId) as {
+          device_name: string | null;
+          device_model: string | null;
+          device_os: string | null;
+          app_version: string | null;
+          is_primary: number;
+        } | undefined;
+
+        stmtMarkSessionSuperseded.run(sessionId);
+        stmtInsertRefreshToken.run(
+          userId,
+          newHash,
+          expiresAt,
+          sessionId,
+          prior?.device_name ?? null,
+          prior?.device_model ?? null,
+          prior?.device_os ?? null,
+          prior?.app_version ?? null,
+          prior?.is_primary ?? 0,
+        );
       })();
     },
 
@@ -2101,6 +2381,76 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     incrementTokenVersion(userId: string): void {
       stmtIncrementTokenVersion.run(userId);
+    },
+
+    isSessionActive(sessionId, userId): boolean {
+      return stmtCheckSessionActive.get(sessionId, userId) !== undefined;
+    },
+
+    listSessionsForUser(userId, currentSessionId): SessionView[] {
+      const rows = stmtListSessions.all(userId) as Array<{
+        session_id: string;
+        device_name: string | null;
+        device_model: string | null;
+        device_os: string | null;
+        app_version: string | null;
+        last_active: string | null;
+        created_at: string;
+        is_primary: number;
+      }>;
+      return rows.map((r) => ({
+        session_id: r.session_id,
+        device_name: r.device_name,
+        device_model: r.device_model,
+        device_os: r.device_os,
+        app_version: r.app_version,
+        last_active: r.last_active,
+        created_at: r.created_at,
+        is_primary: r.is_primary === 1,
+        is_current: r.session_id === currentSessionId,
+      }));
+    },
+
+    setPrimarySession(userId, sessionId): void {
+      // Two-step in one transaction. Without the transaction, a parallel
+      // setPrimary on another session could land between the clear and
+      // the set, leaving zero primaries.
+      db.transaction(() => {
+        stmtClearAllPrimary.run(userId);
+        stmtSetPrimary.run(sessionId, userId);
+      })();
+    },
+
+    revokeSession(sessionId): boolean {
+      let changed = 0;
+      db.transaction(() => {
+        const result = stmtRevokeSession.run(sessionId);
+        changed = result.changes;
+        stmtDeleteDeviceTokensBySession.run(sessionId);
+      })();
+      return changed > 0;
+    },
+
+    promoteFallbackPrimary(userId): void {
+      const hasPrimary = stmtSessionHasPrimary.get(userId) !== undefined;
+      if (hasPrimary) return;
+      const fallback = stmtPickFallbackPrimary.get(userId) as { session_id: string } | undefined;
+      if (!fallback) return;
+      stmtSetPrimary.run(fallback.session_id, userId);
+    },
+
+    touchSessionLastActive(sessionId): void {
+      stmtTouchSession.run(sessionId);
+    },
+
+    getSession(sessionId): RefreshToken | undefined {
+      return stmtGetSession.get(sessionId) as RefreshToken | undefined;
+    },
+
+    getActiveSessionForUser(userId, sessionId): RefreshToken | undefined {
+      const row = stmtGetSession.get(sessionId) as RefreshToken | undefined;
+      if (!row || row.user_id !== userId) return undefined;
+      return row;
     },
 
     getStreak(userId: string, partnerId: string): number {

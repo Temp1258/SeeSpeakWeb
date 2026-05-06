@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { ActivityIndicator, View, Text, TextInput, StyleSheet, LogBox, AppState as RNAppState, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, View, Text, TextInput, StyleSheet, LogBox, AppState as RNAppState, useWindowDimensions } from 'react-native';
 
 LogBox.ignoreLogs(['Could not access feature flag']);
 
@@ -274,7 +274,7 @@ function PillTabBar({ state, descriptors, navigation }: MaterialTopTabBarProps) 
 }
 
 function MainTabs({
-  partnerName, streak, hasUnread, hasUnreadDaily, hasUnreadHome, hasUnreadMail, hasUnreadPromises, onLatestSeen,
+  partnerName, streak, hasUnread, hasUnreadDaily, hasUnreadHome, hasUnreadMail, hasUnreadPromises, onLatestSeen, onSelfRevoked,
 }: {
   partnerName: string;
   streak: number;
@@ -284,6 +284,7 @@ function MainTabs({
   hasUnreadMail: boolean;
   hasUnreadPromises: boolean;
   onLatestSeen: (id: number) => void;
+  onSelfRevoked: () => void;
 }) {
   return (
     <Tab.Navigator
@@ -342,12 +343,13 @@ function MainTabs({
       />
       <Tab.Screen
         name="Settings"
-        component={SettingsScreen}
         options={{
           tabBarLabel: '数据',
           tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>📊</Text>,
         }}
-      />
+      >
+        {() => <SettingsScreen onSelfRevoked={onSelfRevoked} />}
+      </Tab.Screen>
     </Tab.Navigator>
   );
 }
@@ -395,6 +397,11 @@ export default function App() {
       } catch (error) {
         if (error instanceof AuthError) {
           // Server explicitly rejected the session — wipe and re-login.
+          // If another device just kicked us, surface a specific message
+          // so the user understands why they're being bounced to setup.
+          if (error.code === 'session_revoked') {
+            Alert.alert('已退出登录', '此账号在另一台设备上将本机强制下线了。');
+          }
           await storage.clearAll();
           setAppState('setup');
         } else {
@@ -677,6 +684,16 @@ export default function App() {
     }
   }, []);
 
+  // Triggered when the user revokes their own session from
+  // DeviceListCard, OR when an authenticated request bounces with
+  // session_revoked from another device's force-logout. Same recovery
+  // path either way: nuke local state and pop back to login.
+  const handleSelfRevoked = useCallback(async () => {
+    disconnectSocket();
+    await storage.clearAll();
+    setAppState('setup');
+  }, []);
+
   const handleRegistered = useCallback(async (result: { partner_name: string | null }) => {
     const uid = await storage.getUserId();
     if (uid) myUserIdRef.current = uid;
@@ -750,6 +767,7 @@ export default function App() {
               hasUnreadMail={hasUnreadMail}
               hasUnreadPromises={hasUnreadPromises}
               onLatestSeen={handleLatestSeen}
+              onSelfRevoked={handleSelfRevoked}
             />
           </NavigationContainer>
           {overlay && (
