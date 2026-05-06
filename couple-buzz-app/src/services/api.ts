@@ -34,6 +34,44 @@ function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs:
   return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(id));
 }
 
+// Decode the JWT exp claim (no verification — we only use it to *predict*
+// expiry locally). Returns 0 on any decode failure; 0 → caller skips the
+// proactive refresh and lets the normal 401 path handle it.
+function jwtExpMs(token: string): number {
+  try {
+    const part = token.split('.')[1];
+    if (!part) return 0;
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const json = atob(padded);
+    const payload = JSON.parse(json);
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Refresh-window lead. The access token lives 15min; refreshing 60s before
+// expiry lets us avoid the "send body, get 401, send body again" double
+// upload that happens when a request races a stale-token boundary. Larger
+// values waste fewer bytes; smaller values reduce churn. 60s is generous
+// enough to swallow normal RTT variance.
+const PROACTIVE_REFRESH_LEAD_MS = 60_000;
+
+// Refresh proactively when the access token is near expiry. Cheap when the
+// token is still fresh (one storage read + JWT decode); when stale, shares
+// the singleton refresh promise so multiple parallel callers collapse into
+// a single network round-trip. Safe to call before every authed request.
+async function ensureFreshToken(): Promise<void> {
+  const t = await storage.getAccessToken();
+  if (!t) return;
+  const exp = jwtExpMs(t);
+  if (exp === 0) return;
+  if (exp - Date.now() < PROACTIVE_REFRESH_LEAD_MS) {
+    await refreshAccessToken();
+  }
+}
+
 // Singleton-promise lock: when several requests hit a 401 in parallel, they
 // all `await` the same in-flight refresh instead of the second-onward giving
 // up immediately and bubbling the original 401 into an AuthError (which
@@ -70,10 +108,12 @@ async function refreshAccessToken(): Promise<RefreshOutcome> {
         return 'success';
       }
 
-      // 4xx → server says this refresh token is no good (expired/rotated/
-      // unknown). 5xx → the server is sick; the token itself may still be
-      // valid, so treat as transient and try again later.
-      if (res.status >= 400 && res.status < 500) return 'auth';
+      // Only 401/403 are real "this refresh token is rejected" signals.
+      // 429 (rate limit) and 400 (e.g. transient malformed-body edge case)
+      // and 5xx are all treated as transient — we must NOT log the user
+      // out for a rate-limited refresh: that would loop them back to
+      // SetupScreen the moment the auth limiter saturated.
+      if (res.status === 401 || res.status === 403) return 'auth';
       return 'transient';
     } catch {
       return 'transient';
@@ -86,6 +126,12 @@ async function refreshAccessToken(): Promise<RefreshOutcome> {
 }
 
 async function request<T>(path: string, options: RequestInit = {}, requiresAuth = true): Promise<T> {
+  // Proactive refresh: avoid the wasteful "send body → get 401 → refresh →
+  // send body again" round-trip whenever the local token is already known
+  // to be near expiry. The 401 path below stays as a safety net for token
+  // revocation from another device or server clock drift.
+  if (requiresAuth) await ensureFreshToken();
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
@@ -661,14 +707,38 @@ export const api = {
       }, UPLOAD_TIMEOUT_MS);
     };
 
-    let res: Response;
+    // Proactive refresh ensures the first attempt uses a fresh token —
+    // matters more here than for JSON requests because re-uploading a
+    // multipart body costs real bytes and can exceed UPLOAD_TIMEOUT_MS
+    // on a slow link.
+    await ensureFreshToken();
+
+    let res: Response | null = null;
+    let firstThrew = false;
     try {
       res = await tryUpload();
     } catch {
-      throw new Error('Network error');
+      firstThrew = true;
     }
 
-    if (res.status === 401) {
+    // Catch fallback: an HTTP/2 mid-stream 401 from nginx can surface in
+    // NSURLSession as a network error rather than a Response with status
+    // 401. If proactive refresh missed (clock skew / token version bumped
+    // by another device's force-logout / refresh raced), we still need
+    // one more shot before giving up — otherwise the user just sees
+    // "Network error" with no auto-recovery.
+    if (firstThrew) {
+      const outcome = await refreshAccessToken();
+      if (outcome === 'auth') throw new AuthError();
+      if (outcome !== 'success') throw new Error('Network error');
+      try {
+        res = await tryUpload();
+      } catch {
+        throw new Error('Network error');
+      }
+    }
+
+    if (res!.status === 401) {
       const outcome = await refreshAccessToken();
       if (outcome === 'success') {
         try {
@@ -686,11 +756,11 @@ export const api = {
 
     let data: any;
     try {
-      data = await res.json();
+      data = await res!.json();
     } catch {
-      throw new Error(`Server error (${res.status})`);
+      throw new Error(`Server error (${res!.status})`);
     }
-    if (!res.ok) throw new Error(data.error || '上传失败');
+    if (!res!.ok) throw new Error(data.error || '上传失败');
     return data;
   },
 
