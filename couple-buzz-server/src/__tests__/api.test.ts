@@ -466,6 +466,53 @@ describe('PUT /api/device-token', () => {
       .send({});
     expect(res.status).toBe(400);
   });
+
+  it('fan-out: same user with multiple device tokens receives push on every device', async () => {
+    const { app, dbOps, mockPush } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    // Bob already has 'test-device-token' from registerUser. Add two more
+    // physical devices so we can verify the fan-out hits all three.
+    dbOps.setDeviceToken(bob.user_id, 'bob-iphone');
+    dbOps.setDeviceToken(bob.user_id, 'bob-ipad');
+
+    (mockPush as jest.Mock).mockClear();
+
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_type: 'kiss' });
+
+    const tokens = (mockPush as jest.Mock).mock.calls.map((c) => c[0]);
+    expect(tokens.sort()).toEqual(['bob-ipad', 'bob-iphone', 'test-device-token']);
+  });
+
+  it('one device handover: same APNs token re-registered to another user pushes only the new owner', async () => {
+    const { app, dbOps, mockPush } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    // 'test-device-token' currently belongs to Bob (last registerUser to
+    // claim it). Hand the device to Alice — Bob should lose pushes to it.
+    dbOps.setDeviceToken(alice.user_id, 'test-device-token');
+
+    (mockPush as jest.Mock).mockClear();
+
+    await request(app)
+      .post('/api/action')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ action_type: 'kiss' });
+
+    // Bob has zero tokens registered → no push fired at all.
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('clearDeviceTokenByValue evicts only the targeted apns_token', async () => {
+    const { app, dbOps } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    // Two physical devices belong to Alice (registerUser already inserted
+    // 'test-device-token'; add one more).
+    dbOps.setDeviceToken(alice.user_id, 'alice-second-phone');
+    dbOps.clearDeviceTokenByValue('test-device-token');
+    expect(dbOps.getDeviceTokensForUser(alice.user_id)).toEqual(['alice-second-phone']);
+  });
 });
 
 describe('Couples lifecycle (pair_id)', () => {

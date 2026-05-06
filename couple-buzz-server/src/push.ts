@@ -2,6 +2,20 @@ import apn from '@parse/node-apn';
 import path from 'path';
 import type { DbOps } from './db';
 
+// Per-token push primitive. Lives here (not in routes.ts) so it has no
+// circular dependency on the higher-level fan-out helper below. The
+// `deviceToken` is always a single APNs token; multi-device fan-out
+// happens in `pushToUser`.
+export type SendPushFn = (
+  deviceToken: string,
+  actionType: string,
+  senderName: string,
+  extra?: Record<string, string>,
+  badge?: number,
+  collapseId?: string,
+  bodyOverride?: string,
+) => Promise<boolean>;
+
 // Reasons that indicate the device token is no longer valid and should be
 // evicted from the database so we stop trying to push to it.
 // https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns
@@ -209,4 +223,37 @@ export async function sendPush(
     console.error('[APNs] Push error:', error);
     return false;
   }
+}
+
+// Fans a single logical push out to every device the user has registered.
+// No-op when the user has no tokens (push permission denied or never
+// opened the app post-install). Uses Promise.allSettled so one slow /
+// dead token can't stall the rest — same rationale as scheduler's
+// broadcastPush but at user granularity.
+//
+// Trailing undefineds are stripped before invoking pushFn so the recorded
+// call shape matches what call sites used to send directly — keeps
+// jest.toHaveBeenCalledWith assertions stable.
+export async function pushToUser(
+  dbOps: DbOps,
+  pushFn: SendPushFn,
+  userId: string,
+  actionType: string,
+  senderName: string,
+  extra?: Record<string, string>,
+  badge?: number,
+  collapseId?: string,
+  bodyOverride?: string,
+): Promise<void> {
+  const tokens = dbOps.getDeviceTokensForUser(userId);
+  if (tokens.length === 0) return;
+  await Promise.allSettled(
+    tokens.map((t) => {
+      if (bodyOverride !== undefined) return pushFn(t, actionType, senderName, extra, badge, collapseId, bodyOverride);
+      if (collapseId !== undefined) return pushFn(t, actionType, senderName, extra, badge, collapseId);
+      if (badge !== undefined) return pushFn(t, actionType, senderName, extra, badge);
+      if (extra !== undefined) return pushFn(t, actionType, senderName, extra);
+      return pushFn(t, actionType, senderName);
+    }),
+  );
 }

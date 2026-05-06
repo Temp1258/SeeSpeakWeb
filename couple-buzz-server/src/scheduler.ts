@@ -1,5 +1,5 @@
 import { DbOps } from './db';
-import { SendPushFn } from './routes';
+import { pushToUser, type SendPushFn } from './push';
 
 // Per-event dedup keyed by the UTC day the event fires on.
 // Kept in-memory: a process restart within the trigger minute may retrigger
@@ -115,9 +115,6 @@ async function checkCapsuleUnlocks(dbOps: DbOps, pushFn: SendPushFn): Promise<vo
     const recipientId = capsule.visibility === 'self' ? capsule.user_id : capsule.partner_id;
     if (notified.has(recipientId)) continue;
     notified.add(recipientId);
-    const user = dbOps.getUser(recipientId);
-    if (user?.device_token) {
-      await pushFn(user.device_token, 'capsule_unlock', '');
-    }
+    await pushToUser(dbOps, pushFn, recipientId, 'capsule_unlock', '');
   }
 }

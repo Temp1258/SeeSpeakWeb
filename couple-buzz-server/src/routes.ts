@@ -6,6 +6,8 @@ import crypto, { randomInt } from 'crypto';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
 import { createWsTicket, disconnectCouple, emitToCouple, isUserOnline } from './socket';
+import { pushToUser } from './push';
+import type { SendPushFn } from './push';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -17,6 +19,10 @@ import {
   generateUserId,
   signImagePath,
 } from './auth';
+
+// Re-export for back-compat with consumers (e.g. tests) that imported the
+// type from routes. The canonical home is push.ts now.
+export type { SendPushFn };
 
 // Length limits, also enforced at the API edge so a misbehaving client can't
 // bypass the UI's maxLength. `name` shows up in every push body — letting it
@@ -217,15 +223,6 @@ function getRevealTime(sessionKey: string): Date {
   return next;
 }
 
-export type SendPushFn = (
-  deviceToken: string,
-  actionType: string,
-  senderName: string,
-  extra?: Record<string, string>,
-  badge?: number,
-  collapseId?: string,
-  bodyOverride?: string
-) => Promise<boolean>;
 
 // Generate a random 4-digit pair code (CSPRNG, not Math.random)
 export function generatePairCode(): string {
@@ -517,9 +514,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // Skip the APNs push if the partner is foregrounded — the socket
     // 'action_new' below already drives the haptic + red dot, so a banner
     // would be redundant noise. Push still fires when partner is offline.
-    if (partner?.device_token && !isUserOnline(partner.id)) {
+    if (partner && !isUserOnline(partner.id)) {
       const unread = dbOps.getUnreadActionCount(partner.id, userId);
-      await pushFn(partner.device_token, action_type, user.name, undefined, unread);
+      await pushToUser(dbOps, pushFn, partner.id, action_type, user.name, undefined, unread);
     }
     emitToCouple(userId, user.partner_id, 'action_new', { from: userId, action_type });
 
@@ -556,9 +553,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     const partner = dbOps.getUser(user.partner_id);
     // Same online-skip rationale as /api/actions above.
-    if (partner?.device_token && !isUserOnline(partner.id)) {
+    if (partner && !isUserOnline(partner.id)) {
       const unread = dbOps.getUnreadActionCount(partner.id, userId);
-      await pushFn(partner.device_token, 'reaction', user.name, undefined, unread);
+      await pushToUser(dbOps, pushFn, partner.id, 'reaction', user.name, undefined, unread);
     }
     emitToCouple(userId, user.partner_id, 'action_new', { from: userId, action_type, reply_to: actionId });
 
@@ -690,8 +687,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
 
     // Notify partner via push
-    if (partner?.device_token) {
-      await pushFn(partner.device_token, 'unpair', user.name);
+    if (partner) {
+      await pushToUser(dbOps, pushFn, partner.id, 'unpair', user.name);
     }
 
     res.json({ success: true, new_pair_code: newPairCode });
@@ -763,8 +760,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const created = dbOps.createImportantDate(userId, user.partner_id, pairId, title.trim(), date, !!recurring);
 
     const partner = dbOps.getUser(user.partner_id);
-    if (partner?.device_token) {
-      await pushFn(partner.device_token, 'date_new', user.name);
+    if (partner) {
+      await pushToUser(dbOps, pushFn, partner.id, 'date_new', user.name);
     }
 
     res.json({ date: created });
@@ -923,12 +920,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const bothAnswered = !!answers.mine && !!answers.partner;
 
     const partner = dbOps.getUser(user.partner_id);
-    if (partner?.device_token) {
-      if (bothAnswered) {
-        await pushFn(partner.device_token, 'daily_both', user.name);
-      } else {
-        await pushFn(partner.device_token, 'daily_answer', user.name);
-      }
+    if (partner) {
+      await pushToUser(dbOps, pushFn, partner.id, bothAnswered ? 'daily_both' : 'daily_answer', user.name);
     }
 
     res.json({
@@ -1005,11 +998,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
         ? status.myMorning && status.partnerMorning
         : status.myEvening && status.partnerEvening
     );
-    if (partner?.device_token) {
+    if (partner) {
       if (bothCompleted) {
-        await pushFn(partner.device_token, ritual_type === 'morning' ? 'ritual_both_morning' : 'ritual_both_evening', user.name);
+        await pushToUser(dbOps, pushFn, partner.id, ritual_type === 'morning' ? 'ritual_both_morning' : 'ritual_both_evening', user.name);
       } else if (inserted) {
-        await pushFn(partner.device_token, ritual_type === 'morning' ? 'ritual_morning' : 'ritual_evening', user.name);
+        await pushToUser(dbOps, pushFn, partner.id, ritual_type === 'morning' ? 'ritual_morning' : 'ritual_evening', user.name);
       }
     }
 
@@ -1148,8 +1141,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     dbOps.submitMailboxMessage(userId, pairId, sessionKey, content.trim());
 
     const partner = dbOps.getUser(user.partner_id);
-    if (partner?.device_token) {
-      await pushFn(partner.device_token, 'mailbox_written', user.name);
+    if (partner) {
+      await pushToUser(dbOps, pushFn, partner.id, 'mailbox_written', user.name);
     }
 
     res.json({ success: true });
@@ -1481,9 +1474,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // day+hour countdown so the partner knows when to expect it.
     if (vis === 'partner') {
       const partner = dbOps.getUser(user.partner_id);
-      if (partner?.device_token) {
+      if (partner) {
         const countdown = formatDayHourCountdown(unlock_date, partner.timezone);
-        await pushFn(partner.device_token, 'capsule_buried', user.name, { countdown });
+        await pushToUser(dbOps, pushFn, partner.id, 'capsule_buried', user.name, { countdown });
       }
     }
 
@@ -1618,8 +1611,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const item = dbOps.createBucketItem(userId, user.partner_id, pairId, title.trim(), category || null);
 
     const partner = dbOps.getUser(user.partner_id);
-    if (partner?.device_token) {
-      await pushFn(partner.device_token, 'bucket_new', user.name);
+    if (partner) {
+      await pushToUser(dbOps, pushFn, partner.id, 'bucket_new', user.name);
     }
 
     res.json({ item });
@@ -1647,8 +1640,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
 
     if (user.partner_id) {
       const partner = dbOps.getUser(user.partner_id);
-      if (partner?.device_token) {
-        await pushFn(partner.device_token, 'bucket_complete', user.name, { title: item.title });
+      if (partner) {
+        await pushToUser(dbOps, pushFn, partner.id, 'bucket_complete', user.name, { title: item.title });
       }
     }
 
@@ -1758,8 +1751,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const partner = dbOps.getUser(user.partner_id);
     const partnerSnapNow = dbOps.getSnap(user.partner_id, snapDate);
     const both = bothSnapped || !!partnerSnapNow;
-    if (partner?.device_token) {
-      await pushFn(partner.device_token, both ? 'snap_both' : 'snap_submitted', user.name);
+    if (partner) {
+      await pushToUser(dbOps, pushFn, partner.id, both ? 'snap_both' : 'snap_submitted', user.name);
     }
 
     res.json({ success: true, both_snapped: both, snap_date: snapDate });
@@ -1858,8 +1851,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
 
     const partner = dbOps.getUser(user.partner_id);
-    if (partner?.device_token) {
-      await pushFn(partner.device_token, type === 'question' ? 'urge_question' : 'urge_snap', user.name);
+    if (partner) {
+      await pushToUser(dbOps, pushFn, partner.id, type === 'question' ? 'urge_question' : 'urge_snap', user.name);
     }
 
     res.json({ success: true });
@@ -1908,9 +1901,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     dbOps.setDailyReaction(userId, user.partner_id, pairId, targetDate, type, reaction);
 
     const partner = dbOps.getUser(user.partner_id);
-    if (partner?.device_token) {
+    if (partner) {
       const pushType = `react_${type}_${reaction}` as 'react_question_up' | 'react_question_down' | 'react_snap_up' | 'react_snap_down';
-      await pushFn(partner.device_token, pushType, user.name);
+      await pushToUser(dbOps, pushFn, partner.id, pushType, user.name);
     }
 
     res.json({ success: true, reaction });
@@ -2124,8 +2117,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // Push partner if offline; socket update either way (sender's client also
     // listens — it filters by `from`).
     const partner = dbOps.getUser(partnerId);
-    if (partner?.device_token && !isUserOnline(partnerId)) {
-      await pushFn(partner.device_token, 'sticky_posted', userName);
+    if (partner && !isUserOnline(partnerId)) {
+      await pushToUser(dbOps, pushFn, partnerId, 'sticky_posted', userName);
     }
     emitToCouple(userId, partnerId, 'sticky_update', {
       from: userId,
@@ -2207,8 +2200,8 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // that's just `partnerId` regardless of whether commenter is the sticky's
     // original author or the partner — the recipient is "whoever isn't me".
     const partner = dbOps.getUser(ctx.partnerId);
-    if (partner?.device_token && !isUserOnline(ctx.partnerId)) {
-      await pushFn(partner.device_token, 'sticky_appended', ctx.userName);
+    if (partner && !isUserOnline(ctx.partnerId)) {
+      await pushToUser(dbOps, pushFn, ctx.partnerId, 'sticky_appended', ctx.userName);
     }
     emitToCouple(ctx.userId, ctx.partnerId, 'sticky_update', {
       from: ctx.userId,

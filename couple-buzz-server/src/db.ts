@@ -28,6 +28,10 @@ export interface User {
   name: string;
   password_hash: string;
   partner_id: string | null;
+  /** @deprecated Migrated to the `device_tokens` table; do not read at the
+   * route layer. The column is kept in `users` only because dropping it in
+   * SQLite requires a table rebuild — that cleanup happens in a later
+   * commit once everything has been deployed for a release cycle. */
   device_token: string | null;
   pair_code: string;
   token_version: number;
@@ -276,6 +280,10 @@ export interface DbOps {
   setDeviceToken(userId: string, token: string): void;
   clearDeviceToken(userId: string): void;
   clearDeviceTokenByValue(token: string): void;
+  // Returns every APNs token currently registered for `userId`. Empty
+  // array if the user has no devices registered (push permission denied
+  // or app never opened post-install).
+  getDeviceTokensForUser(userId: string): string[];
   // Badge / unread tracking — count of partner's actions newer than what this
   // user has marked as read. Used to drive the iOS app icon badge number.
   setLastReadActionId(userId: string, actionId: number): void;
@@ -774,6 +782,19 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
+    -- One row per (user, physical device) APNs token. Replaces the old
+    -- single-valued users.device_token column so a user signed in on
+    -- several phones can receive pushes on all of them. session_id is
+    -- nullable until Step 3 wires sessions in; APNs tokens registered
+    -- before sessions exist won't bind to one.
+    CREATE TABLE IF NOT EXISTS device_tokens (
+      apns_token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      session_id TEXT,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS important_dates (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
@@ -946,6 +967,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     CREATE INDEX IF NOT EXISTS idx_actions_time ON actions(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
+    CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
+    CREATE INDEX IF NOT EXISTS idx_device_tokens_session ON device_tokens(session_id);
     CREATE INDEX IF NOT EXISTS idx_rituals_user_date ON rituals(user_id, ritual_date);
     CREATE INDEX IF NOT EXISTS idx_mailbox_week ON mailbox(week_key);
     CREATE INDEX IF NOT EXISTS idx_capsules_unlock ON time_capsules(unlock_date);
@@ -1037,6 +1060,24 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const refreshCols = db.pragma('table_info(refresh_tokens)') as { name: string }[];
   if (refreshCols.length > 0 && !refreshCols.some((c) => c.name === 'superseded_at')) {
     db.exec('ALTER TABLE refresh_tokens ADD COLUMN superseded_at DATETIME DEFAULT NULL');
+  }
+
+  // Migration: backfill device_tokens from the legacy users.device_token
+  // single-valued column. INSERT OR IGNORE so re-runs are no-ops. Once
+  // every user with a token has a corresponding device_tokens row, the
+  // legacy column is no longer read or written by app code (it stays in
+  // schema for now to avoid an SQLite table-rebuild — drop in a later
+  // commit after a full deployment cycle).
+  const deviceTokenTable = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='device_tokens'"
+  ).get() as { name: string } | undefined;
+  if (deviceTokenTable) {
+    db.exec(`
+      INSERT OR IGNORE INTO device_tokens (apns_token, user_id, updated_at)
+      SELECT device_token, id, CURRENT_TIMESTAMP
+      FROM users
+      WHERE device_token IS NOT NULL AND device_token != ''
+    `);
   }
 
   // Migration: drop UNIQUE(user_id, week_key) on mailbox so the user can
@@ -1337,16 +1378,25 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     stmtDelDailyAssignByPair.run(pairId);
     stmtDelActionsByPair.run(pairId);
   }
-  const updateDeviceToken = db.prepare('UPDATE users SET device_token = ? WHERE id = ?');
-  const stmtClearDeviceToken = db.prepare('UPDATE users SET device_token = NULL WHERE id = ?');
-  // Revokes a token from any user currently holding it (except the one being updated).
-  // An APNs device token uniquely identifies a device — the last account to log in on
-  // a device is the only one that should receive its pushes.
-  const stmtRevokeTokenFromOthers = db.prepare(
-    'UPDATE users SET device_token = NULL WHERE device_token = ? AND id != ?'
+  // device_tokens: the canonical store post-migration. Multiple rows per
+  // user → multi-device push. Same APNs token can only belong to one user
+  // (an APNs token uniquely identifies a physical device — last account
+  // to register on the device "wins").
+  const stmtUpsertDeviceToken = db.prepare(`
+    INSERT INTO device_tokens (apns_token, user_id, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(apns_token) DO UPDATE SET
+      user_id = excluded.user_id,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+  const stmtDeleteDeviceTokensForUser = db.prepare(
+    'DELETE FROM device_tokens WHERE user_id = ?'
   );
-  const stmtClearTokenByValue = db.prepare(
-    'UPDATE users SET device_token = NULL WHERE device_token = ?'
+  const stmtDeleteDeviceTokenByValue = db.prepare(
+    'DELETE FROM device_tokens WHERE apns_token = ?'
+  );
+  const stmtGetDeviceTokensForUser = db.prepare(
+    'SELECT apns_token FROM device_tokens WHERE user_id = ?'
   );
   // Only advance last_read_action_id forward — never let a client roll it back
   // (e.g. an out-of-order request) and accidentally re-mark old messages unread.
@@ -1568,9 +1618,16 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     WHERE user_id = ? AND pair_id = ? AND week_key = ?
     ORDER BY created_at ASC, id ASC
   `);
-  const stmtGetAllPairedTokens = db.prepare(
-    'SELECT device_token FROM users WHERE partner_id IS NOT NULL AND device_token IS NOT NULL'
-  );
+  // Scheduler broadcast — every APNs token belonging to a paired user.
+  // Joining device_tokens against users so unpaired accounts (waiting on
+  // partner) don't get scheduler-driven notifications like weekly_report
+  // or mailbox_open that have nothing meaningful to show them.
+  const stmtGetAllPairedTokens = db.prepare(`
+    SELECT dt.apns_token AS device_token
+    FROM device_tokens dt
+    JOIN users u ON u.id = dt.user_id
+    WHERE u.partner_id IS NOT NULL
+  `);
 
   // Weekly report statements
   const stmtWeekActions = db.prepare(
@@ -1937,19 +1994,29 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     setDeviceToken(userId: string, token: string): void {
       if (!token) return;
-      db.transaction(() => {
-        stmtRevokeTokenFromOthers.run(token, userId);
-        updateDeviceToken.run(token, userId);
-      })();
+      // ON CONFLICT clause re-points an existing apns_token row to the new
+      // user_id atomically — same physical device handed over to a
+      // different account stops pushing to the previous owner.
+      stmtUpsertDeviceToken.run(token, userId);
     },
 
     clearDeviceToken(userId: string): void {
-      stmtClearDeviceToken.run(userId);
+      // Logout: drop every device this user had registered. Matches the
+      // legacy single-token semantics (logout cleared the one slot) but
+      // now covers all devices.
+      stmtDeleteDeviceTokensForUser.run(userId);
     },
 
     clearDeviceTokenByValue(token: string): void {
+      // Called by the APNs error handler on Unregistered/BadDeviceToken —
+      // drop just that one row, leave the user's other devices alone.
       if (!token) return;
-      stmtClearTokenByValue.run(token);
+      stmtDeleteDeviceTokenByValue.run(token);
+    },
+
+    getDeviceTokensForUser(userId: string): string[] {
+      const rows = stmtGetDeviceTokensForUser.all(userId) as { apns_token: string }[];
+      return rows.map((r) => r.apns_token);
     },
 
     setLastReadActionId(userId: string, actionId: number): void {

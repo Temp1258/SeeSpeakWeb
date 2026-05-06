@@ -2,16 +2,7 @@ import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import crypto from 'crypto';
 import { DbOps } from './db';
-
-type PushFn = (
-  deviceToken: string,
-  actionType: string,
-  senderName: string,
-  extra?: Record<string, string>,
-  badge?: number,
-  collapseId?: string,
-  bodyOverride?: string
-) => Promise<boolean>;
+import { pushToUser, type SendPushFn } from './push';
 
 interface Ticket {
   userId: string;
@@ -96,7 +87,7 @@ export function createWsTicket(userId: string): string {
   return ticket;
 }
 
-export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushFn): Server {
+export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: SendPushFn): Server {
   const io = new Server(httpServer, {
     // Defense-in-depth: ticket auth is the primary guard, but pinning origin
     // means a malicious browser tab can't even open the socket. RN App has
@@ -218,19 +209,19 @@ export function setupSocket(httpServer: HttpServer, dbOps: DbOps, pushFn?: PushF
       // the partner doesn't get N stacked alerts. Body shows the tally.
       const partnerConnected = (presence.sockets.get(partnerId)?.size ?? 0) > 0;
       if (!partnerConnected && pushFn) {
-        const partner = dbOps.getUser(partnerId);
-        if (partner?.device_token) {
-          const tally = (presence.patUnread.get(partnerId) ?? 0) + 1;
-          presence.patUnread.set(partnerId, tally);
-          // Badge: emoji unread + 1 (representing "an unread pat series").
-          // Multiple pats in the series keep emoji_unread the same → badge
-          // stays put, matching the user's "+1 only" expectation.
-          const emojiUnread = dbOps.getUnreadActionCount(partnerId, userId);
-          const badge = emojiUnread + 1;
-          const body = `${user.name} 想你了 ${tally} 下！🥹`;
-          const collapseId = `pat_${userId}`;
-          pushFn(partner.device_token, 'touch', user.name, undefined, badge, collapseId, body);
-        }
+        const tally = (presence.patUnread.get(partnerId) ?? 0) + 1;
+        presence.patUnread.set(partnerId, tally);
+        // Badge: emoji unread + 1 (representing "an unread pat series").
+        // Multiple pats in the series keep emoji_unread the same → badge
+        // stays put, matching the user's "+1 only" expectation.
+        const emojiUnread = dbOps.getUnreadActionCount(partnerId, userId);
+        const badge = emojiUnread + 1;
+        const body = `${user.name} 想你了 ${tally} 下！🥹`;
+        const collapseId = `pat_${userId}`;
+        // Fire-and-forget — touch_start handler must return synchronously
+        // for the rate-limit window math; awaiting would gate every pat
+        // on APNs RTT and starve the WebSocket emit downstream.
+        void pushToUser(dbOps, pushFn, partnerId, 'touch', user.name, undefined, badge, collapseId, body);
       }
     });
 
