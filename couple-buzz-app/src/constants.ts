@@ -91,7 +91,7 @@ export const ACTION_CATEGORIES: ActionCategory[] = [
       { type: 'pick_nose', emoji: '🤏', label: '抠鼻屎', color: '#D4C5A9' },
       { type: 'work', emoji: '💻', label: '工作', color: '#A8D8EA' },
       { type: 'gym', emoji: '🏋️', label: '健身', color: '#B5D8CC' },
-      { type: 'milk_tea', emoji: '🧋', label: '喝奶茶', color: '#E3C9A8' },
+      { type: 'milk_tea', emoji: '🫩', label: '累', color: '#E3C9A8' },
       { type: 'drink', emoji: '🥤', label: '喝饮料', color: '#A8D8EA' },
     ],
   },

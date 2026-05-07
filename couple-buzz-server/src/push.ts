@@ -71,7 +71,7 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   call_husband: { title: '🤵 召唤老公', body: '{name} 在召唤老公～' },
   call_baby: { title: '🍼 召唤宝贝', body: '{name} 在召唤宝贝～' },
   gym: { title: '🏋️ 健身', body: '{name} 在健身，今天也要变强！' },
-  milk_tea: { title: '🧋 喝奶茶', body: '{name} 在喝奶茶，馋不馋？' },
+  milk_tea: { title: '🫩 累', body: '{name} 累了～' },
   drink: { title: '🥤 喝饮料', body: '{name} 在喝饮料，要不要来一杯？' },
   show_off: { title: '😎 得瑟', body: '{name} 在得瑟，快瞧瞧！' },
   smug: { title: '🤩 得意', body: '{name} 得意得不行～' },  // legacy, kept for old client compat
