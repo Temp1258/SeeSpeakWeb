@@ -123,14 +123,16 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
 
       // Load saved draft + sender/partner identity bits, then seed the
       // datetime picker to "tomorrow 09:00" in the sender's timezone.
+      // Draft now lives on the server (Step 4) so the user can pick up
+      // where they left off on any of their devices.
       Promise.all([
-        storage.getWriteLetterDraft(),
+        api.getLetterDraft().catch(() => ({ draft: '' })),
         storage.getUserName(),
         storage.getTimezone(),
         storage.getPartnerRemark(),
         storage.getPartnerTimezone(),
-      ]).then(([savedDraft, n, tz, r, ptz]) => {
-        setContent(savedDraft || '');
+      ]).then(([draftResp, n, tz, r, ptz]) => {
+        setContent(draftResp.draft || '');
         if (n) setMyName(n);
         if (r) setPartnerRemark(r);
         if (ptz) setPartnerTz(ptz);
@@ -157,7 +159,7 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
     if (!visible) return;
     if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
     draftSaveTimer.current = setTimeout(() => {
-      storage.setWriteLetterDraft(content).catch(() => {});
+      api.setLetterDraft(content).catch(() => {});
     }, 400);
     return () => {
       if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
@@ -287,9 +289,9 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
 
       try {
         await Promise.all([animPromise, apiPromise]);
-        // Letter shipped — clear the persisted draft so a fresh open shows
-        // an empty page.
-        await storage.clearWriteLetterDraft();
+        // Letter shipped — clear the persisted draft so a fresh open
+        // (anywhere) shows an empty page.
+        await api.setLetterDraft('').catch(() => {});
         setContent('');
         // Broadcast so MailboxScreen + App.tsx can light up the 发件箱 🚩
         // and 信箱 tab dot without prop drilling.
@@ -327,12 +329,12 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
       draftSaveTimer.current = null;
     }
     // Save in any stage where content is still meaningful as a draft —
-    // i.e. anywhere except 'sending', where the API has already taken the
-    // content and `clearWriteLetterDraft` will run on success. Saving in
-    // 'sending' would race the clear and could resurrect a sent letter as
-    // a draft on next open.
+    // i.e. anywhere except 'sending', where the API has already taken
+    // the content and the post-success setLetterDraft('') will run.
+    // Saving in 'sending' would race the clear and could resurrect a
+    // sent letter as a draft on next open.
     if (stage !== 'sending') {
-      storage.setWriteLetterDraft(content).catch(() => {});
+      api.setLetterDraft(content).catch(() => {});
     }
     onClose();
   }, [stage, content, onClose]);

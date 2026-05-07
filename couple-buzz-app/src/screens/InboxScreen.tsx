@@ -223,12 +223,12 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
     // with an empty seenBeforeOpenRef — otherwise every card briefly flashes
     // the "未读" pill until AsyncStorage resolves a few ms later.
     (async () => {
-      const seen = await storage.getInboxLastSeen();
+      const { seen_at } = await api.getInboxSeen().catch(() => ({ seen_at: null as string | null }));
       // First-ever open: anchor at "now" so we don't flag every historical
       // letter as unread on first launch. After this call, only NEW arrivals
       // (between visits) get the badge.
-      seenBeforeOpenRef.current = seen ?? new Date().toISOString();
-      await storage.setInboxLastSeen(new Date().toISOString());
+      seenBeforeOpenRef.current = seen_at ?? new Date().toISOString();
+      api.markInboxSeen().catch(() => {});
       load();
     })();
   }, [visible, load]);

@@ -434,6 +434,16 @@ export interface DbOps {
   // freshness check against pending letters' created_at. Stored
   // server-side so the marker survives logout / reinstall / device hop.
   markOutboxSeen(userId: string): void;
+
+  // Step 4: cross-device sync for what used to be AsyncStorage-only
+  // state. All three live on `users` for simplicity (one row per user
+  // already, single source of truth, no extra joins on hot paths).
+  getDailySeen(userId: string): { date: string | null; pa: boolean; ps: boolean };
+  setDailySeen(userId: string, date: string, pa: boolean, ps: boolean): void;
+  getInboxLastSeen(userId: string): string | null;
+  setInboxLastSeen(userId: string, iso: string): void;
+  getLetterDraft(userId: string): string;
+  setLetterDraft(userId: string, draft: string): void;
   getAllPairedUserTokens(): { device_token: string }[];
   // Weekly Report.
   //   weekStart/weekEnd  — date-only YYYY-MM-DD strings (used for the
@@ -1095,6 +1105,25 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   if (!userCols.some((c) => c.name === 'outbox_last_seen')) {
     db.exec('ALTER TABLE users ADD COLUMN outbox_last_seen TEXT DEFAULT NULL');
   }
+  // Step 4: per-user "I have seen" markers and the in-progress letter
+  // draft live on the server so they sync across devices for the same
+  // account. Each device used to keep these in AsyncStorage, which broke
+  // the "log in on a second phone, see all my state" promise.
+  if (!userCols.some((c) => c.name === 'daily_seen_date')) {
+    db.exec('ALTER TABLE users ADD COLUMN daily_seen_date TEXT');
+  }
+  if (!userCols.some((c) => c.name === 'daily_seen_pa')) {
+    db.exec('ALTER TABLE users ADD COLUMN daily_seen_pa INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!userCols.some((c) => c.name === 'daily_seen_ps')) {
+    db.exec('ALTER TABLE users ADD COLUMN daily_seen_ps INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!userCols.some((c) => c.name === 'inbox_last_seen')) {
+    db.exec('ALTER TABLE users ADD COLUMN inbox_last_seen TEXT');
+  }
+  if (!userCols.some((c) => c.name === 'write_letter_draft')) {
+    db.exec("ALTER TABLE users ADD COLUMN write_letter_draft TEXT NOT NULL DEFAULT ''");
+  }
 
   const actionCols = db.pragma('table_info(actions)') as { name: string }[];
   if (!actionCols.some((c) => c.name === 'sender_timezone')) {
@@ -1566,6 +1595,29 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
   const stmtAttachDeviceTokenToSession = db.prepare(
     'UPDATE device_tokens SET session_id = ? WHERE apns_token = ?'
+  );
+
+  // Step 4 — synced "seen" markers + letter draft.
+  const stmtGetDailySeen = db.prepare(
+    'SELECT daily_seen_date AS date, daily_seen_pa AS pa, daily_seen_ps AS ps FROM users WHERE id = ?'
+  );
+  const stmtSetDailySeen = db.prepare(
+    'UPDATE users SET daily_seen_date = ?, daily_seen_pa = ?, daily_seen_ps = ? WHERE id = ?'
+  );
+  const stmtGetInboxLastSeen = db.prepare(
+    'SELECT inbox_last_seen FROM users WHERE id = ?'
+  );
+  // Only-advance: an out-of-order client write (e.g. older device coming
+  // back online) must not roll the marker backwards and resurface
+  // already-read letters as unread.
+  const stmtSetInboxLastSeen = db.prepare(
+    'UPDATE users SET inbox_last_seen = ? WHERE id = ? AND (inbox_last_seen IS NULL OR inbox_last_seen < ?)'
+  );
+  const stmtGetLetterDraft = db.prepare(
+    'SELECT write_letter_draft FROM users WHERE id = ?'
+  );
+  const stmtSetLetterDraft = db.prepare(
+    'UPDATE users SET write_letter_draft = ? WHERE id = ?'
   );
   // Only advance last_read_action_id forward — never let a client roll it back
   // (e.g. an out-of-order request) and accidentally re-mark old messages unread.
@@ -2256,6 +2308,36 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     attachDeviceTokenToSession(apnsToken, sessionId): void {
       stmtAttachDeviceTokenToSession.run(sessionId, apnsToken);
+    },
+
+    getDailySeen(userId): { date: string | null; pa: boolean; ps: boolean } {
+      const row = stmtGetDailySeen.get(userId) as
+        | { date: string | null; pa: number; ps: number }
+        | undefined;
+      if (!row) return { date: null, pa: false, ps: false };
+      return { date: row.date, pa: row.pa === 1, ps: row.ps === 1 };
+    },
+
+    setDailySeen(userId, date, pa, ps): void {
+      stmtSetDailySeen.run(date, pa ? 1 : 0, ps ? 1 : 0, userId);
+    },
+
+    getInboxLastSeen(userId): string | null {
+      const row = stmtGetInboxLastSeen.get(userId) as { inbox_last_seen: string | null } | undefined;
+      return row?.inbox_last_seen ?? null;
+    },
+
+    setInboxLastSeen(userId, iso): void {
+      stmtSetInboxLastSeen.run(iso, userId, iso);
+    },
+
+    getLetterDraft(userId): string {
+      const row = stmtGetLetterDraft.get(userId) as { write_letter_draft: string } | undefined;
+      return row?.write_letter_draft ?? '';
+    },
+
+    setLetterDraft(userId, draft): void {
+      stmtSetLetterDraft.run(draft, userId);
     },
 
     setLastReadActionId(userId: string, actionId: number): void {

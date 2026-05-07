@@ -733,6 +733,144 @@ describe('Sessions / multi-device login', () => {
   });
 });
 
+describe('Cross-device sync (daily seen / inbox seen / letter draft)', () => {
+  it('daily seen: defaults to empty, round-trips through GET/POST', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    const initial = await request(app)
+      .get('/api/daily/seen')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(initial.status).toBe(200);
+    expect(initial.body).toEqual({ date: null, pa: false, ps: false });
+
+    const set = await request(app)
+      .post('/api/daily/seen')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ date: '2026-05-04', pa: true, ps: false });
+    expect(set.status).toBe(200);
+
+    const after = await request(app)
+      .get('/api/daily/seen')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(after.body).toEqual({ date: '2026-05-04', pa: true, ps: false });
+  });
+
+  it('daily seen: rejects malformed date', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const res = await request(app)
+      .post('/api/daily/seen')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ date: 'not-a-date', pa: false, ps: false });
+    expect(res.status).toBe(400);
+  });
+
+  it('inbox seen: marker only advances forward', async () => {
+    const { app, dbOps } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    const initial = await request(app)
+      .get('/api/inbox/seen')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(initial.body.seen_at).toBeNull();
+
+    await request(app)
+      .post('/api/inbox/seen')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .expect(200);
+
+    const after = await request(app)
+      .get('/api/inbox/seen')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(after.body.seen_at).toBeTruthy();
+
+    // Out-of-order client write with a stale ISO must NOT roll the
+    // marker back. dbOps method is the public surface here; the route
+    // always sends "now" so the only way to send a stale value is via
+    // dbOps directly.
+    dbOps.setInboxLastSeen(alice.user_id, '2020-01-01T00:00:00.000Z');
+    const stillForward = await request(app)
+      .get('/api/inbox/seen')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(stillForward.body.seen_at).toBe(after.body.seen_at);
+  });
+
+  it('letter draft: round-trips, length-capped, clear via empty string', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const bob = await registerUser(app, 'Bob');
+
+    // Empty default.
+    const initial = await request(app)
+      .get('/api/letter-draft')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(initial.body.draft).toBe('');
+
+    // Set + read back.
+    await request(app)
+      .put('/api/letter-draft')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ draft: '亲爱的：今天想你了。' })
+      .expect(200);
+    const r1 = await request(app)
+      .get('/api/letter-draft')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(r1.body.draft).toBe('亲爱的：今天想你了。');
+
+    // 8001-char draft is rejected.
+    const tooLong = 'x'.repeat(8001);
+    const cap = await request(app)
+      .put('/api/letter-draft')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ draft: tooLong });
+    expect(cap.status).toBe(400);
+
+    // Clear.
+    await request(app)
+      .put('/api/letter-draft')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ draft: '' })
+      .expect(200);
+    const r2 = await request(app)
+      .get('/api/letter-draft')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(r2.body.draft).toBe('');
+
+    // Bob's draft is independent.
+    await request(app)
+      .put('/api/letter-draft')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ draft: 'bob独立的稿子' })
+      .expect(200);
+    const aliceStillEmpty = await request(app)
+      .get('/api/letter-draft')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(aliceStillEmpty.body.draft).toBe('');
+  });
+
+  it('drafts and seen markers persist across logout-other-device (different sessions, same user)', async () => {
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    // Login as a "second device" → another session for the same user.
+    const second = await request(app)
+      .post('/api/login')
+      .send({ user_id: alice.user_id, password: 'test1234' });
+    const secondToken = second.body.access_token;
+
+    // Write draft from device 1; observed on device 2.
+    await request(app)
+      .put('/api/letter-draft')
+      .set('Authorization', `Bearer ${alice.access_token}`)
+      .send({ draft: 'shared 起草' })
+      .expect(200);
+    const fromSecond = await request(app)
+      .get('/api/letter-draft')
+      .set('Authorization', `Bearer ${secondToken}`);
+    expect(fromSecond.body.draft).toBe('shared 起草');
+  });
+});
+
 describe('Couples lifecycle (pair_id)', () => {
   it('pair generates a 10-char pair_id and unpair sets ended_at', async () => {
     const { app, dbOps } = createTestApp();

@@ -1314,6 +1314,60 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true });
   });
 
+  // GET / POST /api/daily/seen — per-user "I have seen partner's daily
+  // content" flags. Server-stored so the red dot on the 每日 tab stays
+  // consistent across devices for the same account.
+  router.get('/daily/seen', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    res.json(dbOps.getDailySeen(userId));
+  });
+  router.post('/daily/seen', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { date, pa, ps } = req.body || {};
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+    }
+    dbOps.setDailySeen(userId, date, !!pa, !!ps);
+    res.json({ success: true });
+  });
+
+  // GET / POST /api/inbox/seen — ISO timestamp of last inbox visit.
+  // POST sets to "now"; only-advance semantics in dbOps so an out-of-
+  // order client write can't roll the marker back.
+  router.get('/inbox/seen', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    res.json({ seen_at: dbOps.getInboxLastSeen(userId) });
+  });
+  router.post('/inbox/seen', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    dbOps.setInboxLastSeen(userId, new Date().toISOString());
+    res.json({ success: true });
+  });
+
+  // GET / PUT /api/letter-draft — the in-progress letter the user is
+  // composing in WriteLetterScreen. Was AsyncStorage-only; moving it
+  // server-side lets the user pick up the draft on another device.
+  // Submit on the mailbox path clears it via the same PUT with empty
+  // string.
+  router.get('/letter-draft', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    res.json({ draft: dbOps.getLetterDraft(userId) });
+  });
+  router.put('/letter-draft', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const draft = req.body?.draft;
+    if (typeof draft !== 'string') {
+      return res.status(400).json({ error: 'draft must be a string' });
+    }
+    // Hard cap on draft length so a runaway client can't blow up storage.
+    // Same 8000 ceiling the front-end enforces (`MAX_LETTER_LEN`).
+    if (draft.length > 8000) {
+      return res.status(400).json({ error: 'draft too long' });
+    }
+    dbOps.setLetterDraft(userId, draft);
+    res.json({ success: true });
+  });
+
   // Inbox soft-delete endpoints — used by the inbox & trash views.
   // Body: { kind: 'mailbox' | 'capsule', ref_id: number }
 

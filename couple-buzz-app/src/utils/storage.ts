@@ -10,12 +10,18 @@ const KEYS = {
   TIMEZONE: 'couple_buzz_timezone',
   PARTNER_TIMEZONE: 'couple_buzz_partner_timezone',
   PARTNER_REMARK: 'couple_buzz_partner_remark',
-  DAILY_SEEN_DATE: 'couple_buzz_daily_seen_date',
-  DAILY_SEEN_PA: 'couple_buzz_daily_seen_pa',
-  DAILY_SEEN_PS: 'couple_buzz_daily_seen_ps',
-  INBOX_LAST_SEEN: 'couple_buzz_inbox_last_seen',
-  WRITE_LETTER_DRAFT: 'couple_buzz_write_letter_draft',
 };
+
+// Pre-Step 4 keys that are now server-stored. Kept here only so
+// `clearAll` can mop them up on logout — never read or written from app
+// code anymore.
+const LEGACY_KEYS = [
+  'couple_buzz_daily_seen_date',
+  'couple_buzz_daily_seen_pa',
+  'couple_buzz_daily_seen_ps',
+  'couple_buzz_inbox_last_seen',
+  'couple_buzz_write_letter_draft',
+];
 
 export const storage = {
   async getUserId(): Promise<string | null> {
@@ -103,47 +109,9 @@ export const storage = {
     await AsyncStorage.setItem(KEYS.PARTNER_ID, id);
   },
 
-  async getDailySeen(): Promise<{ date: string | null; pa: boolean; ps: boolean }> {
-    const [date, pa, ps] = await Promise.all([
-      AsyncStorage.getItem(KEYS.DAILY_SEEN_DATE),
-      AsyncStorage.getItem(KEYS.DAILY_SEEN_PA),
-      AsyncStorage.getItem(KEYS.DAILY_SEEN_PS),
-    ]);
-    return { date, pa: pa === '1', ps: ps === '1' };
-  },
-
-  async setDailySeen(date: string, partnerAnswered: boolean, partnerSnapped: boolean): Promise<void> {
-    await Promise.all([
-      AsyncStorage.setItem(KEYS.DAILY_SEEN_DATE, date),
-      AsyncStorage.setItem(KEYS.DAILY_SEEN_PA, partnerAnswered ? '1' : '0'),
-      AsyncStorage.setItem(KEYS.DAILY_SEEN_PS, partnerSnapped ? '1' : '0'),
-    ]);
-  },
-
-  async getInboxLastSeen(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.INBOX_LAST_SEEN);
-  },
-
-  async setInboxLastSeen(iso: string): Promise<void> {
-    await AsyncStorage.setItem(KEYS.INBOX_LAST_SEEN, iso);
-  },
-
-  // Draft body of an in-progress letter from WriteLetterScreen. Persists
-  // across modal close so the user doesn't lose typed content if they
-  // accidentally exit. Cleared on successful submit.
-  async getWriteLetterDraft(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.WRITE_LETTER_DRAFT);
-  },
-
-  async setWriteLetterDraft(text: string): Promise<void> {
-    await AsyncStorage.setItem(KEYS.WRITE_LETTER_DRAFT, text);
-  },
-
-  async clearWriteLetterDraft(): Promise<void> {
-    await AsyncStorage.removeItem(KEYS.WRITE_LETTER_DRAFT);
-  },
-
   async clearAll(): Promise<void> {
-    await AsyncStorage.multiRemove(Object.values(KEYS));
+    // Legacy keys included so a logout / force-revoke wipes any stragglers
+    // from before the Step 4 server-side migration.
+    await AsyncStorage.multiRemove([...Object.values(KEYS), ...LEGACY_KEYS]);
   },
 };

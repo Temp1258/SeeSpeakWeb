@@ -1,5 +1,4 @@
 import { api } from '../services/api';
-import { storage } from './storage';
 
 // Mailbox letter "arrived" at the session reveal time. AM session reveals at
 // 12:00 UTC of the date; PM at next-day 0:00 UTC. Mirrors server's
@@ -29,11 +28,12 @@ export function normalizeIso(s: string | null | undefined): string {
 // stored marker, every historical letter would otherwise look "new".
 export async function hasUnreadInboxItems(): Promise<boolean> {
   try {
-    const [seen, mailbox, capsules] = await Promise.all([
-      storage.getInboxLastSeen(),
+    const [seenResp, mailbox, capsules] = await Promise.all([
+      api.getInboxSeen().catch(() => ({ seen_at: null })),
       api.getMailboxArchive(50).catch(() => ({ weeks: [] as any[] })),
       api.getCapsules().catch(() => ({ capsules: [] as any[] })),
     ]);
+    const seen = seenResp.seen_at;
     if (!seen) return false;
 
     for (const w of mailbox.weeks || []) {

@@ -812,6 +812,27 @@ export const api = {
     return request('/api/daily-reaction', { method: 'POST', body: JSON.stringify({ type, reaction }) });
   },
 
+  // Per-user "seen" markers + draft, server-stored so they sync across
+  // devices for the same account. (Step 4)
+  getDailySeen(): Promise<{ date: string | null; pa: boolean; ps: boolean }> {
+    return request('/api/daily/seen');
+  },
+  setDailySeen(date: string, pa: boolean, ps: boolean): Promise<{ success: boolean }> {
+    return request('/api/daily/seen', { method: 'POST', body: JSON.stringify({ date, pa, ps }) });
+  },
+  getInboxSeen(): Promise<{ seen_at: string | null }> {
+    return request('/api/inbox/seen');
+  },
+  markInboxSeen(): Promise<{ success: boolean }> {
+    return request('/api/inbox/seen', { method: 'POST' });
+  },
+  getLetterDraft(): Promise<{ draft: string }> {
+    return request('/api/letter-draft');
+  },
+  setLetterDraft(draft: string): Promise<{ success: boolean }> {
+    return request('/api/letter-draft', { method: 'PUT', body: JSON.stringify({ draft }) });
+  },
+
   // Sessions / multi-device login.
   listSessions(): Promise<{ sessions: SessionView[] }> {
     return request('/api/sessions');

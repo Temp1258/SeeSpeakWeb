@@ -492,7 +492,7 @@ export default function App() {
           api.getDailyQuestion(),
           api.getSnapToday(),
         ]);
-        const seen = await storage.getDailySeen();
+        const seen = await api.getDailySeen();
         const isSameDay = seen.date === dq.date;
         const newPA = dq.partner_answered && (!isSameDay || !seen.pa);
         const newPS = sn.partner_snapped && (!isSameDay || !seen.ps);
@@ -501,7 +501,7 @@ export default function App() {
             setHasUnreadDaily(true);
           } else {
             // Already on the tab — mark as seen
-            await storage.setDailySeen(dq.date, dq.partner_answered, sn.partner_snapped);
+            await api.setDailySeen(dq.date, dq.partner_answered, sn.partner_snapped);
           }
         }
       } catch {}
@@ -650,7 +650,7 @@ export default function App() {
         api.getDailyQuestion(),
         api.getSnapToday(),
       ]);
-      await storage.setDailySeen(dq.date, dq.partner_answered, sn.partner_snapped);
+      await api.setDailySeen(dq.date, dq.partner_answered, sn.partner_snapped);
     } catch {}
   }, []);
 
