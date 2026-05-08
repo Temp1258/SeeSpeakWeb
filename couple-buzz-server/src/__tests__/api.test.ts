@@ -440,6 +440,112 @@ describe('GET /api/history', () => {
     expect(res.status).toBe(200);
     expect(res.body.actions).toHaveLength(2);
   });
+
+  it('actions table has idx_actions_pair_time composite index', () => {
+    // Bug 2 regression. /api/history filters on pair_id and orders by
+    // created_at DESC; without this composite, long-term couples take a
+    // full-table scan + sort. Asserting presence of the index in
+    // sqlite_master is a reliable schema-level check (the planner's
+    // runtime choice depends on data stats, but the index has to exist
+    // for it to be picked at all).
+    const { db } = createTestApp();
+    const indexes = db.prepare(`
+      SELECT name, sql FROM sqlite_master
+      WHERE type='index' AND tbl_name='actions'
+    `).all() as Array<{ name: string; sql: string }>;
+    const composite = indexes.find((i) => i.name === 'idx_actions_pair_time');
+    expect(composite).toBeDefined();
+    expect(composite!.sql).toMatch(/pair_id/);
+    expect(composite!.sql).toMatch(/created_at/);
+    expect(composite!.sql).toMatch(/DESC/i);
+  });
+
+  it('reactions for visible actions never get dropped by old LIMIT 500 cutoff', async () => {
+    // Bug 3 regression. The old getHistoryReactions returned the
+    // 500-most-recent reactions across the whole pair. A reaction with
+    // an OLD created_at (e.g. user reacted long ago to action X, which
+    // is still inside the visible window) could be pushed out by 500
+    // newer reactions targeting other actions — the visible action X
+    // would silently lose its reaction in /api/history.
+    //
+    // We construct exactly that: one OLD reaction targeting an action
+    // that's in the visible page, then 550 NEWER reactions targeting a
+    // different parent. With the new page-aligned query, the old
+    // reaction is still surfaced because we filter by reply_to IN
+    // (visible action ids), not by recency.
+    const { app, dbOps, db } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const pairId = dbOps.couplesGetActivePairId(alice.user_id, bob.user_id)!;
+
+    const insertAction = db.prepare(`
+      INSERT INTO actions (user_id, pair_id, action_type, sender_timezone, sender_name, reply_to, created_at)
+      VALUES (?, ?, 'love', 'UTC', '', NULL, ?)
+    `);
+    const insertReaction = db.prepare(`
+      INSERT INTO actions (user_id, pair_id, action_type, sender_timezone, sender_name, reply_to, created_at)
+      VALUES (?, ?, 'kiss', 'UTC', '', ?, ?)
+    `);
+
+    // Anchor in the past so all timestamps fit in datetime() comparisons.
+    const baseMs = Date.parse('2024-01-01T00:00:00Z');
+    const iso = (offsetHours: number) =>
+      new Date(baseMs + offsetHours * 3_600_000).toISOString();
+
+    // 200 visible top-level actions, each 1h apart starting at t=0.
+    const actionIds: number[] = [];
+    for (let i = 0; i < 200; i++) {
+      const r = insertAction.run(alice.user_id, pairId, iso(i));
+      actionIds.push(r.lastInsertRowid as number);
+    }
+    const oldestVisibleId = actionIds[0];
+
+    // The "old reaction": Bob reacted to the oldest visible action at
+    // t=200h (still relatively old).
+    insertReaction.run(bob.user_id, pairId, oldestVisibleId, iso(200));
+
+    // 550 decoy reactions on an unrelated visible action, all FAR newer
+    // than the old reaction. With LIMIT 500 ORDER BY created_at DESC,
+    // these would entirely fill the response window and bury the old
+    // reaction.
+    const decoyParentId = actionIds[100];
+    for (let i = 0; i < 550; i++) {
+      insertReaction.run(alice.user_id, pairId, decoyParentId, iso(300 + i));
+    }
+
+    const res = await request(app)
+      .get('/api/history?limit=200')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.actions).toHaveLength(200);
+
+    // The oldest visible action's reaction MUST still surface despite the
+    // 550 newer reactions on the decoy parent.
+    const reactionsForOldest = res.body.reactions[oldestVisibleId];
+    expect(reactionsForOldest).toBeDefined();
+    expect(reactionsForOldest).toHaveLength(1);
+    expect(reactionsForOldest[0].action_type).toBe('kiss');
+  });
+
+  it('limit query param parses leading-zero strings as decimal (radix 10)', async () => {
+    // Bug 7 defensive regression. parseInt without explicit radix can,
+    // in legacy engines, treat "050" as octal (= 40). Pin it.
+    const { app } = createTestApp();
+    const { alice } = await registerPairedUsers(app);
+
+    // Generate 50 actions so we can tell 40 vs 50.
+    for (let i = 0; i < 50; i++) {
+      await request(app)
+        .post('/api/action')
+        .set('Authorization', `Bearer ${alice.access_token}`)
+        .send({ action_type: 'love' });
+    }
+
+    const res = await request(app)
+      .get('/api/history?limit=050')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.actions).toHaveLength(50);
+  });
 });
 
 describe('PUT /api/device-token', () => {
