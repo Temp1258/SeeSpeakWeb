@@ -385,6 +385,10 @@ export interface DbOps {
   // returns whether it succeeded (false → session not found / already
   // revoked).
   revokeSession(sessionId: string): boolean;
+  // Rename every active session of this user whose (device_name,
+  // device_os) matches the target session's — keeps the dedup group
+  // displayed in the app coherent.
+  renameSessionGroup(userId: string, sessionId: string, newName: string): boolean;
   // Promote the most-recently-active surviving session to primary if no
   // primary is currently set. Called when the user revokes their own
   // primary session so the user isn't left with no primary.
@@ -1771,6 +1775,20 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     WHERE session_id = ? AND superseded_at IS NULL AND revoked = 0
     LIMIT 1
   `);
+  // Rename every still-active session whose (device_name, device_os)
+  // matches the target's. The device list in the app dedups rows by
+  // that same key, so this keeps the visible row & every session it
+  // represents in lockstep — tap-to-rename feels like renaming "this
+  // device", not "this row in particular". `IS` is used for null-aware
+  // equality so an old row that has NULL device_name still groups.
+  const stmtRenameSessionGroup = db.prepare(`
+    UPDATE refresh_tokens SET device_name = ?
+    WHERE user_id = ?
+      AND device_name IS ?
+      AND device_os IS ?
+      AND superseded_at IS NULL
+      AND revoked = 0
+  `);
 
   // Streak day boundary aligns with the BJT 7am session boundary used by
   // daily-question / daily-snap (UTC 23h = BJT 7am). Without the +1h shift,
@@ -2576,6 +2594,18 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
         stmtDeleteDeviceTokensBySession.run(sessionId);
       })();
       return changed > 0;
+    },
+
+    renameSessionGroup(userId, sessionId, newName): boolean {
+      const target = stmtGetSession.get(sessionId) as RefreshToken | undefined;
+      if (!target || target.user_id !== userId) return false;
+      const result = stmtRenameSessionGroup.run(
+        newName,
+        userId,
+        target.device_name,
+        target.device_os,
+      );
+      return result.changes > 0;
     },
 
     promoteFallbackPrimary(userId): void {

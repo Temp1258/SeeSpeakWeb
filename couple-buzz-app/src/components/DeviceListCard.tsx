@@ -1,4 +1,4 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { COLORS } from '../constants';
 import { api, AuthError, SessionView } from '../services/api';
@@ -8,6 +8,20 @@ type Reloadable = { reload: () => Promise<void> };
 
 interface Props {
   onSelfRevoked: () => void;
+}
+
+// One physical device → one row. Multiple sessions for the same device
+// (created by reinstalls / re-logins) collapse under a single group:
+// the visible row reflects the most-recently-active session, but
+// rename / promote / revoke fan out to every member of the group so
+// the user's mental model "this device" matches what the server does.
+interface DeviceGroup {
+  key: string;
+  representative: SessionView;
+  members: SessionView[];
+  latest_active: string | null;
+  is_primary: boolean;
+  is_current: boolean;
 }
 
 const DeviceListCard = forwardRef<Reloadable, Props>(({ onSelfRevoked }, ref) => {
@@ -28,13 +42,13 @@ const DeviceListCard = forwardRef<Reloadable, Props>(({ onSelfRevoked }, ref) =>
   useImperativeHandle(ref, () => ({ reload: load }), [load]);
   useEffect(() => { load(); }, [load]);
 
-  const me = sessions?.find((s) => s.is_current);
-  const iAmPrimary = !!me?.is_primary;
+  const groups = useMemo(() => groupByDevice(sessions ?? []), [sessions]);
+  const iAmPrimary = groups.some((g) => g.is_current && g.is_primary);
 
-  const promote = useCallback(async (s: SessionView) => {
-    setBusy(s.session_id);
+  const promote = useCallback(async (g: DeviceGroup) => {
+    setBusy(g.key);
     try {
-      await api.promoteSession(s.session_id);
+      await api.promoteSession(g.representative.session_id);
       await load();
     } catch (e: any) {
       Alert.alert('', e?.message || '操作失败');
@@ -43,72 +57,104 @@ const DeviceListCard = forwardRef<Reloadable, Props>(({ onSelfRevoked }, ref) =>
     }
   }, [load]);
 
-  const revoke = useCallback(async (s: SessionView) => {
-    setBusy(s.session_id);
+  const revoke = useCallback(async (g: DeviceGroup) => {
+    setBusy(g.key);
     try {
-      await api.revokeSession(s.session_id);
-      if (s.is_current) {
-        // Server has already revoked our session; the next API call would
-        // 401. Fast-path the logout: clear local storage and notify the
-        // host to swap to SetupScreen instead of waiting for the bounce.
+      // Revoke every session backing this device row in parallel. If the
+      // group contains the current session, our own session will be one
+      // of those revokes — server has already kicked us by the time the
+      // promise settles, so we fast-path to SetupScreen instead of
+      // waiting for the next API call to bounce.
+      const results = await Promise.allSettled(
+        g.members.map((m) => api.revokeSession(m.session_id))
+      );
+      if (g.is_current) {
         await storage.clearAll();
         onSelfRevoked();
         return;
       }
+      const failure = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
+      if (failure) {
+        const reason: any = failure.reason;
+        Alert.alert('', reason?.message || '部分会话下线失败');
+      }
       await load();
-    } catch (e: any) {
-      Alert.alert('', e?.message || '操作失败');
     } finally {
       setBusy(null);
     }
   }, [load, onSelfRevoked]);
 
-  const onTapRow = useCallback((s: SessionView) => {
-    // Action sheet built on Alert so we don't pull in another dep. The
-    // composition is intentional: "set as primary" only makes sense for
-    // a non-primary session and only when the requester IS primary;
-    // "force-logout" is always available for self, and for others when
-    // the requester is primary. A non-primary requester tapping another
-    // device just sees "在此设备退出登录" if it's their own row.
-    const buttons: { text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }[] = [];
-    const canTransfer = !s.is_primary && (iAmPrimary || s.is_current);
-    if (canTransfer && (iAmPrimary || s.is_current === false)) {
-      // "set as primary" requires either: (a) requester is primary, or
-      // (b) the row is the requester themselves AND they're not primary
-      //     yet — but that's the exact case where server requires an
-      //     existing primary; we just keep this client-side check loose
-      //     and let the server do the final auth.
-      if (iAmPrimary) {
-        buttons.push({ text: '设为主设备', onPress: () => promote(s) });
-      }
+  const rename = useCallback(async (g: DeviceGroup, raw: string) => {
+    const next = raw.trim();
+    if (!next) return;
+    if (next === (g.representative.device_name ?? '')) return;
+    setBusy(g.key);
+    try {
+      await api.renameSession(g.representative.session_id, next);
+      await load();
+    } catch (e: any) {
+      Alert.alert('', e?.message || '重命名失败');
+    } finally {
+      setBusy(null);
     }
-    const canRevoke = s.is_current || iAmPrimary;
+  }, [load]);
+
+  const promptRename = useCallback((g: DeviceGroup) => {
+    // iOS-only Alert.prompt is fine here — the app is iOS / iPadOS only.
+    Alert.prompt(
+      '重命名设备',
+      '在「已登录设备」里显示的名字。',
+      [
+        { text: '取消', style: 'cancel' },
+        { text: '保存', onPress: (v?: string) => rename(g, v ?? '') },
+      ],
+      'plain-text',
+      g.representative.device_name ?? '',
+    );
+  }, [rename]);
+
+  const onTapRow = useCallback((g: DeviceGroup) => {
+    // Action sheet built on Alert so we don't pull in another dep. The
+    // composition is intentional: rename always available for self,
+    // available for others when the requester is primary; promote only
+    // when the requester is primary AND the row isn't already primary;
+    // force-logout always available for self, and for others when the
+    // requester is primary.
+    type Btn = { text: string; style?: 'cancel' | 'destructive'; onPress?: () => void };
+    const buttons: Btn[] = [];
+
+    const canRename = g.is_current || iAmPrimary;
+    if (canRename) {
+      buttons.push({ text: '重命名', onPress: () => promptRename(g) });
+    }
+    if (!g.is_primary && iAmPrimary) {
+      buttons.push({ text: '设为主设备', onPress: () => promote(g) });
+    }
+    const canRevoke = g.is_current || iAmPrimary;
     if (canRevoke) {
       buttons.push({
-        text: s.is_current ? '在此设备退出登录' : '强制下线',
+        text: g.is_current ? '在此设备退出登录' : '强制下线',
         style: 'destructive',
-        onPress: () => confirmRevoke(s),
+        onPress: () => confirmRevoke(g),
       });
     }
     buttons.push({ text: '取消', style: 'cancel' });
 
     if (buttons.length === 1) {
-      // Only "Cancel" — nothing to offer for this row given current
-      // permissions. Show a hint instead of a useless single-option sheet.
       Alert.alert('', '仅主设备能管理其它设备');
       return;
     }
-    Alert.alert(formatDeviceLine(s), formatSubLine(s), buttons);
-  }, [iAmPrimary, promote]);
+    Alert.alert(formatDeviceLine(g.representative), formatSubLine(g), buttons);
+  }, [iAmPrimary, promote, promptRename]);
 
-  const confirmRevoke = (s: SessionView) => {
-    const title = s.is_current ? '在此设备退出登录？' : `强制下线「${formatDeviceLine(s)}」？`;
-    const body = s.is_current
+  const confirmRevoke = (g: DeviceGroup) => {
+    const title = g.is_current ? '在此设备退出登录？' : `强制下线「${formatDeviceLine(g.representative)}」？`;
+    const body = g.is_current
       ? '退出后需要重新输入 ID 和密码登录。'
       : '该设备会立刻与你的账号断开，需要重新登录才能再使用。';
     Alert.alert(title, body, [
       { text: '取消', style: 'cancel' },
-      { text: '确认', style: 'destructive', onPress: () => revoke(s) },
+      { text: '确认', style: 'destructive', onPress: () => revoke(g) },
     ]);
   };
 
@@ -126,26 +172,26 @@ const DeviceListCard = forwardRef<Reloadable, Props>(({ onSelfRevoked }, ref) =>
   return (
     <View style={styles.card}>
       <Text style={styles.header}>已登录设备</Text>
-      {sessions.map((s, idx) => (
+      {groups.map((g, idx) => (
         <TouchableOpacity
-          key={s.session_id}
+          key={g.key}
           activeOpacity={0.7}
-          onPress={() => onTapRow(s)}
+          onPress={() => onTapRow(g)}
           style={[styles.row, idx > 0 && styles.rowDivider]}
         >
-          <Text style={styles.rowEmoji}>{deviceEmoji(s)}</Text>
+          <Text style={styles.rowEmoji}>{deviceEmoji(g.representative)}</Text>
           <View style={styles.rowMain}>
             <View style={styles.rowTitleLine}>
-              <Text style={styles.rowTitle} numberOfLines={1}>{formatDeviceLine(s)}</Text>
-              {s.is_primary ? <Text style={styles.primaryBadge}>主设备</Text> : null}
-              {s.is_current ? <Text style={styles.currentBadge}>本机</Text> : null}
+              <Text style={styles.rowTitle} numberOfLines={1}>{formatDeviceLine(g.representative)}</Text>
+              {g.is_primary ? <Text style={styles.primaryBadge}>主设备</Text> : null}
+              {g.is_current ? <Text style={styles.currentBadge}>本机</Text> : null}
             </View>
-            <Text style={styles.rowSub} numberOfLines={1}>{formatSubLine(s)}</Text>
+            <Text style={styles.rowSub} numberOfLines={1}>{formatSubLine(g)}</Text>
           </View>
-          {busy === s.session_id ? <ActivityIndicator color={COLORS.kiss} /> : <Text style={styles.chevron}>›</Text>}
+          {busy === g.key ? <ActivityIndicator color={COLORS.kiss} /> : <Text style={styles.chevron}>›</Text>}
         </TouchableOpacity>
       ))}
-      {!iAmPrimary && sessions.length > 1 ? (
+      {!iAmPrimary && groups.length > 1 ? (
         <Text style={styles.footnote}>仅主设备能强制下线其它设备</Text>
       ) : null}
     </View>
@@ -154,12 +200,58 @@ const DeviceListCard = forwardRef<Reloadable, Props>(({ onSelfRevoked }, ref) =>
 
 export default DeviceListCard;
 
+// Group by (device_name, device_os). Null fields fold into a shared
+// bucket so legacy rows from before the device-info feature don't
+// fragment into a row each.
+function groupByDevice(sessions: SessionView[]): DeviceGroup[] {
+  const buckets = new Map<string, SessionView[]>();
+  for (const s of sessions) {
+    const key = `${s.device_name ?? ''}|${s.device_os ?? ''}`;
+    const list = buckets.get(key);
+    if (list) list.push(s);
+    else buckets.set(key, [s]);
+  }
+  const groups: DeviceGroup[] = [];
+  for (const [key, members] of buckets) {
+    // Representative = most-recently-active row; that's the one the
+    // user mentally identifies as "this device right now". Falling
+    // back to created_at handles the brand-new-session case where
+    // last_active hasn't been touched yet.
+    const sorted = [...members].sort(
+      (a, b) => activityTime(b) - activityTime(a)
+    );
+    const rep = sorted[0];
+    const latest = rep.last_active ?? rep.created_at;
+    groups.push({
+      key,
+      representative: rep,
+      members,
+      latest_active: latest,
+      is_primary: members.some((m) => m.is_primary),
+      is_current: members.some((m) => m.is_current),
+    });
+  }
+  return groups.sort((a, b) => {
+    if (a.is_primary !== b.is_primary) return a.is_primary ? -1 : 1;
+    return activityTimeOf(b.latest_active) - activityTimeOf(a.latest_active);
+  });
+}
+
+function activityTime(s: SessionView): number {
+  return activityTimeOf(s.last_active ?? s.created_at);
+}
+
+function activityTimeOf(iso: string | null): number {
+  if (!iso) return 0;
+  const isoZ = iso.includes('T') ? iso : `${iso.replace(' ', 'T')}Z`;
+  const t = new Date(isoZ).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
 function deviceEmoji(s: SessionView): string {
-  const m = (s.device_model ?? '').toLowerCase();
-  const n = (s.device_name ?? '').toLowerCase();
   const o = (s.device_os ?? '').toLowerCase();
-  if (m.includes('ipad') || n.includes('ipad') || o.includes('ipados')) return '📱';
-  if (o.includes('android')) return '📱';
+  if (o.includes('macos')) return '💻';
+  if (o.includes('ipados')) return '📱';
   return '📱';
 }
 
@@ -170,11 +262,11 @@ function formatDeviceLine(s: SessionView): string {
   return '未知设备';
 }
 
-function formatSubLine(s: SessionView): string {
+function formatSubLine(g: DeviceGroup): string {
   const parts: string[] = [];
-  if (s.device_os) parts.push(s.device_os);
-  const last = s.last_active ?? s.created_at;
-  parts.push(`活跃于 ${formatRelativeTime(last)}`);
+  const os = g.representative.device_os;
+  if (os) parts.push(os);
+  parts.push(`活跃于 ${formatRelativeTime(g.latest_active)}`);
   return parts.join(' · ');
 }
 

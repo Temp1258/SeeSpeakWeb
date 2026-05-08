@@ -848,6 +848,15 @@ export const api = {
   revokeSession(sessionId: string): Promise<{ success: boolean }> {
     return request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
   },
+  // Rename the device label. Server propagates to every active session
+  // sharing the same (device_name, device_os) so the dedup grouping in
+  // DeviceListCard stays one row per physical device after the edit.
+  renameSession(sessionId: string, name: string): Promise<{ success: boolean }> {
+    return request(`/api/sessions/${encodeURIComponent(sessionId)}/name`, {
+      method: 'PUT',
+      body: JSON.stringify({ name }),
+    });
+  },
   logout(): Promise<{ success: boolean }> {
     return request('/api/logout', { method: 'POST' });
   },

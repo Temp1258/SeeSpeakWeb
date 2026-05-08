@@ -2457,6 +2457,37 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true });
   });
 
+  // PUT /api/sessions/:sid/name — rename the device label for the
+  // target session. The rename propagates to every other still-active
+  // session of this user whose (device_name, device_os) matches the
+  // target's, so the device list (which dedups rows by that pair) keeps
+  // showing one row per physical device after the edit. Self-rename is
+  // always allowed; renaming a non-self session requires primary, same
+  // permission model as promote / revoke.
+  router.put('/sessions/:sid/name', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const sid = String(req.params.sid);
+    const raw = (req.body && typeof req.body === 'object') ? (req.body as { name?: unknown }).name : undefined;
+    if (typeof raw !== 'string') return res.status(400).json({ error: 'name must be a string' });
+    const name = raw.trim();
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    if (name.length > 80) return res.status(400).json({ error: 'name max 80 characters' });
+
+    const target = dbOps.getActiveSessionForUser(userId, sid);
+    if (!target) return res.status(404).json({ error: 'Session not found' });
+
+    if (sid !== req.sessionId) {
+      const me = req.sessionId ? dbOps.getActiveSessionForUser(userId, req.sessionId) : undefined;
+      if (!me || me.is_primary !== 1) {
+        return res.status(403).json({ error: 'Only the primary device can rename other devices' });
+      }
+    }
+
+    const ok = dbOps.renameSessionGroup(userId, sid, name);
+    if (!ok) return res.status(404).json({ error: 'Session not found' });
+    res.json({ success: true });
+  });
+
   // DELETE /api/sessions/:sid — force-logout the named session.
   // Self-revoke always allowed; revoking a different session requires
   // the requester to be primary.
