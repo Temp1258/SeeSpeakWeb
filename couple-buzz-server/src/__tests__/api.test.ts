@@ -712,6 +712,147 @@ describe('Sessions / multi-device login', () => {
     expect(probe.body.code).toBe('session_revoked');
   });
 
+  it('login inherits the device name a user previously set for this OS', async () => {
+    // Regression for: rename → logout → re-login was silently resetting
+    // the device name back to "iPhone" because the new session row was
+    // written from the client's default device.name. The server now
+    // looks back at this user's prior sessions for the same OS and
+    // inherits the rename when no other session is currently active on
+    // that OS.
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    // Bind the original session to a known fingerprint so the renamer
+    // has something specific to match. The server treats the incoming
+    // device.name "iPhone" as a default → still allowed to be inherited
+    // over later, which is fine for this setup phase.
+    const firstLogin = await request(app)
+      .post('/api/login')
+      .send({
+        user_id: alice.user_id,
+        password: 'test1234',
+        device: { name: 'iPhone', os: 'iOS 17.2' },
+      });
+
+    const myList = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${firstLogin.body.access_token}`);
+    const mySid = myList.body.sessions.find((s: { is_current: boolean }) => s.is_current).session_id;
+
+    // Rename the iPhone group to "x".
+    await request(app)
+      .put(`/api/sessions/${mySid}/name`)
+      .set('Authorization', `Bearer ${firstLogin.body.access_token}`)
+      .send({ name: 'x' })
+      .expect(200);
+
+    // Group-revoke wipes the now-named-"x" session. After this the
+    // user has no active sessions on iOS 17.2.
+    await request(app)
+      .delete(`/api/sessions/${mySid}/group`)
+      .set('Authorization', `Bearer ${firstLogin.body.access_token}`)
+      .expect(200);
+
+    // Re-login from the same physical device. Client still sends the
+    // default "iPhone" name (iOS 16+ without entitlement). Server must
+    // pick up the prior "x" rename and write it onto the new row.
+    const reLogin = await request(app)
+      .post('/api/login')
+      .send({
+        user_id: alice.user_id,
+        password: 'test1234',
+        device: { name: 'iPhone', os: 'iOS 17.2' },
+      });
+
+    const after = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${reLogin.body.access_token}`);
+    expect(after.body.sessions).toHaveLength(2);
+    const current = after.body.sessions.find((s: { is_current: boolean }) => s.is_current);
+    expect(current.device_name).toBe('x');
+  });
+
+  it('login does NOT inherit a name when another device is still active on the same OS', async () => {
+    // Multi-device safety: the inherit heuristic only fires when this
+    // user has no active session on the incoming OS. Otherwise a fresh
+    // login on a different physical device would silently take the
+    // sibling's name.
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    // Phone A logs in & gets renamed to "MyPhone".
+    const phoneA = await request(app)
+      .post('/api/login')
+      .send({
+        user_id: alice.user_id,
+        password: 'test1234',
+        device: { name: 'iPhone', os: 'iOS 17.2' },
+      });
+    const aList = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${phoneA.body.access_token}`);
+    const aSid = aList.body.sessions.find((s: { is_current: boolean }) => s.is_current).session_id;
+    await request(app)
+      .put(`/api/sessions/${aSid}/name`)
+      .set('Authorization', `Bearer ${phoneA.body.access_token}`)
+      .send({ name: 'MyPhone' })
+      .expect(200);
+
+    // Phone B (a different physical device) logs in while Phone A is
+    // still active. It should keep its default "iPhone" name — NOT
+    // inherit "MyPhone".
+    const phoneB = await request(app)
+      .post('/api/login')
+      .send({
+        user_id: alice.user_id,
+        password: 'test1234',
+        device: { name: 'iPhone', os: 'iOS 17.2' },
+      });
+    const bList = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${phoneB.body.access_token}`);
+    const bCurrent = bList.body.sessions.find((s: { is_current: boolean }) => s.is_current);
+    expect(bCurrent.device_name).toBe('iPhone');
+  });
+
+  it('non-primary device can self-promote to primary', async () => {
+    // Bug-2 recovery: after force-revoking a primary session via the
+    // old broken parallel path, the user could end up with an orphan
+    // primary they couldn't reach. Server already permitted self-
+    // promote (the route's primary check is skipped when sid==own);
+    // pin that contract with a test so a future refactor doesn't
+    // accidentally lock users out.
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+    const second = await request(app)
+      .post('/api/login')
+      .send({
+        user_id: alice.user_id,
+        password: 'test1234',
+        device: { name: 'iPad Pro', os: 'iPadOS 17.2' },
+      });
+
+    // Verify second is non-primary at start.
+    const list = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${second.body.access_token}`);
+    const mySid = list.body.sessions.find((s: { is_current: boolean }) => s.is_current).session_id;
+    expect(list.body.sessions.find((s: { is_current: boolean }) => s.is_current).is_primary).toBe(false);
+
+    // Self-promote.
+    await request(app)
+      .post(`/api/sessions/${mySid}/primary`)
+      .set('Authorization', `Bearer ${second.body.access_token}`)
+      .expect(200);
+
+    // Now we're primary; alice's original session is not.
+    const after = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${second.body.access_token}`);
+    expect(after.body.sessions.find((s: { is_current: boolean }) => s.is_current).is_primary).toBe(true);
+    expect(after.body.sessions.filter((s: { is_primary: boolean }) => s.is_primary)).toHaveLength(1);
+  });
+
   it('refresh preserves session_id (rotation does NOT spawn ghost sessions)', async () => {
     const { app } = createTestApp();
     const alice = await registerUser(app, 'Alice');

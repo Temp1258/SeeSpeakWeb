@@ -391,6 +391,11 @@ export interface DbOps {
   // disconnect their sockets. Returns [] if the target doesn't exist
   // or doesn't belong to the user.
   revokeSessionGroup(userId: string, sessionId: string): string[];
+  // Look up the most recent device_name this user used for the given
+  // OS. Returns null if no usable history exists or if the user
+  // currently has another active session on that OS (in which case
+  // the inherited name might belong to a different physical device).
+  inheritDeviceNameForOs(userId: string, deviceOs: string | null): string | null;
   // Rename every active session of this user whose (device_name,
   // device_os) matches the target session's — keeps the dedup group
   // displayed in the app coherent.
@@ -1817,6 +1822,29 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       AND superseded_at IS NULL
       AND revoked = 0
   `);
+  // For login-time name inheritance: if the user has no still-active
+  // session matching the incoming device_os (i.e. they just logged out
+  // & are coming back), pick the most-recent prior name for that OS so
+  // a re-login keeps the rename instead of resetting to "iPhone". Only
+  // counts active rows here so a multi-device scenario with a sibling
+  // still online doesn't accidentally rename the new session after the
+  // sibling.
+  const stmtCountActiveSessionsByOs = db.prepare(`
+    SELECT COUNT(*) AS n FROM refresh_tokens
+    WHERE user_id = ?
+      AND device_os IS ?
+      AND superseded_at IS NULL
+      AND revoked = 0
+      AND datetime(expires_at) >= datetime('now')
+  `);
+  const stmtMostRecentDeviceNameByOs = db.prepare(`
+    SELECT device_name FROM refresh_tokens
+    WHERE user_id = ?
+      AND device_os IS ?
+      AND device_name IS NOT NULL
+    ORDER BY COALESCE(last_active, created_at) DESC
+    LIMIT 1
+  `);
 
   // Streak day boundary aligns with the BJT 7am session boundary used by
   // daily-question / daily-snap (UTC 23h = BJT 7am). Without the +1h shift,
@@ -2622,6 +2650,15 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
         stmtDeleteDeviceTokensBySession.run(sessionId);
       })();
       return changed > 0;
+    },
+
+    inheritDeviceNameForOs(userId, deviceOs): string | null {
+      if (!deviceOs) return null;
+      const active = stmtCountActiveSessionsByOs.get(userId, deviceOs) as { n: number } | undefined;
+      if ((active?.n ?? 0) > 0) return null;
+      const row = stmtMostRecentDeviceNameByOs.get(userId, deviceOs) as { device_name: string | null } | undefined;
+      const name = row?.device_name?.trim();
+      return name || null;
     },
 
     revokeSessionGroup(userId, sessionId): string[] {

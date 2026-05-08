@@ -132,7 +132,11 @@ const DeviceListCard = forwardRef<Reloadable, Props>(({ onSelfRevoked }, ref) =>
     if (canRename) {
       buttons.push({ text: '重命名', onPress: () => promptRename(g) });
     }
-    if (!g.is_primary && iAmPrimary) {
+    // Self-promote is always available (server allows promoting your
+    // own session unconditionally). It's the recovery path when the
+    // current primary is stuck on a stale device the user can't reach.
+    // Promoting OTHER devices still requires being primary.
+    if (!g.is_primary && (g.is_current || iAmPrimary)) {
       buttons.push({ text: '设为主设备', onPress: () => promote(g) });
     }
     const canRevoke = g.is_current || iAmPrimary;
@@ -146,7 +150,7 @@ const DeviceListCard = forwardRef<Reloadable, Props>(({ onSelfRevoked }, ref) =>
     buttons.push({ text: '取消', style: 'cancel' });
 
     if (buttons.length === 1) {
-      Alert.alert('', '仅主设备能管理其它设备');
+      Alert.alert('', '本机不是主设备。点「本机」→「设为主设备」后再回来管理这台设备。');
       return;
     }
     Alert.alert(formatDeviceLine(g.representative), formatSubLine(g), buttons);
@@ -197,7 +201,7 @@ const DeviceListCard = forwardRef<Reloadable, Props>(({ onSelfRevoked }, ref) =>
         </TouchableOpacity>
       ))}
       {!iAmPrimary && groups.length > 1 ? (
-        <Text style={styles.footnote}>仅主设备能强制下线其它设备</Text>
+        <Text style={styles.footnote}>仅主设备能管理其它设备 · 点「本机」可设为主设备</Text>
       ) : null}
     </View>
   );

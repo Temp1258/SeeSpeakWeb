@@ -259,6 +259,31 @@ function parseDeviceInfo(body: { device?: unknown }): import('./db').DeviceInfo 
   };
 }
 
+// iOS 16+ without the user-assigned-device-name entitlement returns
+// the device model from UIDevice.name, so the client can only send
+// these defaults. When we see one of these on /api/login, we treat it
+// as "no opinion from the client" and inherit the prior name the user
+// set for this OS — otherwise re-login would silently reset a
+// renamed device back to "iPhone".
+const DEFAULT_DEVICE_NAMES = new Set(['iPhone', 'iPad', 'Mac', 'Android Phone', 'Device']);
+
+function applyDeviceNameInheritance(
+  dbOps: DbOps,
+  userId: string,
+  deviceInfo: import('./db').DeviceInfo | undefined,
+): import('./db').DeviceInfo | undefined {
+  if (!deviceInfo) return deviceInfo;
+  const incoming = deviceInfo.name?.trim() ?? '';
+  // Respect a non-default name from the client — if the user later
+  // adds the entitlement and Constants.deviceName starts returning
+  // their real "Steve 的 iPhone", we don't want to silently overwrite
+  // it with a stale rename from history.
+  if (incoming && !DEFAULT_DEVICE_NAMES.has(incoming)) return deviceInfo;
+  const inherited = dbOps.inheritDeviceNameForOs(userId, deviceInfo.os ?? null);
+  if (!inherited || inherited === incoming) return deviceInfo;
+  return { ...deviceInfo, name: inherited };
+}
+
 function issueTokens(
   dbOps: DbOps,
   userId: string,
@@ -355,7 +380,11 @@ export function createPublicRouter(dbOps: DbOps): Router {
     const hasPrimary = dbOps
       .listSessionsForUser(user.id, '')
       .some((s) => s.is_primary);
-    const deviceInfo = parseDeviceInfo(req.body);
+    const deviceInfo = applyDeviceNameInheritance(
+      dbOps,
+      user.id,
+      parseDeviceInfo(req.body),
+    );
     const { access_token, refresh_token, session_id } = issueTokens(
       dbOps, user.id, user.token_version, deviceInfo, !hasPrimary,
     );
