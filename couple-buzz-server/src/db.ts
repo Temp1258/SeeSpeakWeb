@@ -445,6 +445,18 @@ export interface DbOps {
   getLetterDraft(userId: string): string;
   setLetterDraft(userId: string, draft: string): void;
   getAllPairedUserTokens(): { device_token: string }[];
+  // Same shape as the broadcast-tokens query but at user granularity, so
+  // scheduler broadcasts can fan out via pushToUser (which fills in the
+  // APNs badge per recipient) instead of bypassing it with raw sendPush.
+  getAllPairedUserIds(): string[];
+  // Cross-feature unread total used as the default APNs badge when a
+  // pushToUser caller doesn't supply one. Sums History + Inbox letters
+  // (mailbox + unlocked partner-bound capsules) + sticky-wall blocks.
+  // Daily-question/snap unread is NOT included — its "today" boundary
+  // depends on the user's local-date logic that lives at the route layer;
+  // pushToUser's `Math.max(1, …)` floor still guarantees daily pushes
+  // surface a red badge even when total is 0.
+  getTotalUnreadBadge(userId: string): number;
   // Weekly Report.
   //   weekStart/weekEnd  — date-only YYYY-MM-DD strings (used for the
   //     question_date / ritual_date comparisons; those columns are stored
@@ -1915,6 +1927,59 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     JOIN users u ON u.id = dt.user_id
     WHERE u.partner_id IS NOT NULL
   `);
+  // Distinct paired user ids — driver for scheduler broadcasts that need
+  // per-user push (so badge can be computed per recipient).
+  const stmtGetAllPairedUserIds = db.prepare(`
+    SELECT DISTINCT u.id
+    FROM device_tokens dt
+    JOIN users u ON u.id = dt.user_id
+    WHERE u.partner_id IS NOT NULL
+  `);
+
+  // ─── Total-unread-badge composition ──────────────────────────────────────
+  // Each statement is scoped to a (recipient, partner, pair) tuple so a
+  // re-pair scenario doesn't leak prior-pair counts into the badge.
+  // Mailbox: partner-authored letters in the active pair, not soft-deleted
+  // by this user, with created_at past their inbox-last-seen marker.
+  // datetime() normalizes both sides — `m.created_at` is SQLite default
+  // ('YYYY-MM-DD HH:MM:SS') while `inbox_last_seen` is ISO with the 'T'
+  // separator and trailing 'Z'; lex-comparing them directly is wrong
+  // because ' ' (0x20) < 'T' (0x54) so the marker would always look later.
+  const stmtCountUnreadInboxMailbox = db.prepare(`
+    SELECT COUNT(*) AS n FROM mailbox m
+    LEFT JOIN inbox_actions ia
+      ON ia.user_id = ? AND ia.kind = 'mailbox' AND ia.ref_id = m.id
+        AND ia.status IN ('trashed', 'purged')
+    WHERE m.user_id = ? AND m.pair_id = ?
+      AND datetime(m.created_at) > datetime(IFNULL(?, '1970-01-01'))
+      AND ia.id IS NULL
+  `);
+  // Capsule: partner-bound capsules whose unlock_at has elapsed and the
+  // recipient hasn't opened yet. Self-vis capsules are excluded (those
+  // belong to the author's own future-self letterbox, not the partner's).
+  const stmtCountUnreadInboxCapsules = db.prepare(`
+    SELECT COUNT(*) AS n FROM time_capsules c
+    LEFT JOIN inbox_actions ia
+      ON ia.user_id = ? AND ia.kind = 'capsule' AND ia.ref_id = c.id
+        AND ia.status IN ('trashed', 'purged')
+    WHERE c.partner_id = ? AND c.pair_id = ?
+      AND c.visibility = 'partner'
+      AND c.unlock_at <= ?
+      AND c.opened_at IS NULL
+      AND ia.id IS NULL
+  `);
+  // Sticky: partner-authored committed blocks newer than this user's
+  // per-sticky last_seen cursor. Stickies without a sticky_seen row use
+  // last_seen_block_id = 0 (every partner block counts).
+  const stmtCountUnreadStickyBlocks = db.prepare(`
+    SELECT COUNT(*) AS n FROM sticky_blocks b
+    JOIN sticky_notes s ON s.id = b.sticky_id
+    LEFT JOIN sticky_seen ss ON ss.user_id = ? AND ss.sticky_id = b.sticky_id
+    WHERE s.pair_id = ?
+      AND b.author_id = ?
+      AND b.status = 'committed'
+      AND b.id > IFNULL(ss.last_seen_block_id, 0)
+  `);
 
   // Weekly report statements
   const stmtWeekActions = db.prepare(
@@ -2701,6 +2766,39 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     getAllPairedUserTokens(): { device_token: string }[] {
       return stmtGetAllPairedTokens.all() as { device_token: string }[];
+    },
+
+    getAllPairedUserIds(): string[] {
+      return (stmtGetAllPairedUserIds.all() as { id: string }[]).map(r => r.id);
+    },
+
+    getTotalUnreadBadge(userId: string): number {
+      const user = getUserById.get(userId) as User | undefined;
+      if (!user || !user.partner_id) return 0;
+      const partnerId = user.partner_id;
+
+      // History — uses the existing prepared statement that already powers
+      // the per-tab unread count; reusing keeps a single source of truth.
+      const h = stmtCountUnreadActions.get(partnerId, user.last_read_action_id) as { n: number } | undefined;
+
+      const [a, b] = sortedPair(userId, partnerId);
+      const pairRow = stmtGetActivePairId.get(a, b) as { pair_id: string } | undefined;
+      const pairId = pairRow?.pair_id;
+      // No active pair (mid-unpair / never paired): only history can have
+      // residual unread; everything else is pair-scoped, so return early.
+      if (!pairId) return h?.n ?? 0;
+
+      // inbox_last_seen lives on `users` but isn't on the User interface;
+      // hit the row directly to avoid an extra round-trip helper.
+      const inboxRow = stmtGetInboxLastSeen.get(userId) as { inbox_last_seen: string | null } | undefined;
+      const inboxLastSeen = inboxRow?.inbox_last_seen ?? null;
+      const nowIso = new Date().toISOString();
+
+      const m = stmtCountUnreadInboxMailbox.get(userId, partnerId, pairId, inboxLastSeen) as { n: number } | undefined;
+      const c = stmtCountUnreadInboxCapsules.get(userId, userId, pairId, nowIso) as { n: number } | undefined;
+      const s = stmtCountUnreadStickyBlocks.get(userId, pairId, partnerId) as { n: number } | undefined;
+
+      return (h?.n ?? 0) + (m?.n ?? 0) + (c?.n ?? 0) + (s?.n ?? 0);
     },
 
     // Weekly Report

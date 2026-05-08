@@ -231,9 +231,12 @@ export async function sendPush(
 // dead token can't stall the rest — same rationale as scheduler's
 // broadcastPush but at user granularity.
 //
-// Trailing undefineds are stripped before invoking pushFn so the recorded
-// call shape matches what call sites used to send directly — keeps
-// jest.toHaveBeenCalledWith assertions stable.
+// When the caller doesn't pass `badge`, we fall back to the recipient's
+// real cross-feature unread total (with a floor of 1). APNs leaves the
+// icon badge unchanged when `aps.badge` is absent — so omitting it meant
+// the icon never went red for sticky/mailbox/daily/etc. pushes once the
+// client had cleared it on app activation. Always sending a value avoids
+// that silent dead-end.
 export async function pushToUser(
   dbOps: DbOps,
   pushFn: SendPushFn,
@@ -247,13 +250,18 @@ export async function pushToUser(
 ): Promise<void> {
   const tokens = dbOps.getDeviceTokensForUser(userId);
   if (tokens.length === 0) return;
+
+  // Floor of 1: the act of firing a push means there's at least one thing
+  // for the recipient to see. Ensures categories without per-feature unread
+  // counters (unpair / weather / weekly_report / bucket_complete / date_new
+  // / mailbox_open) still light up the icon instead of going to a stale 0.
+  const finalBadge = badge ?? Math.max(1, dbOps.getTotalUnreadBadge(userId));
+
   await Promise.allSettled(
     tokens.map((t) => {
-      if (bodyOverride !== undefined) return pushFn(t, actionType, senderName, extra, badge, collapseId, bodyOverride);
-      if (collapseId !== undefined) return pushFn(t, actionType, senderName, extra, badge, collapseId);
-      if (badge !== undefined) return pushFn(t, actionType, senderName, extra, badge);
-      if (extra !== undefined) return pushFn(t, actionType, senderName, extra);
-      return pushFn(t, actionType, senderName);
+      if (bodyOverride !== undefined) return pushFn(t, actionType, senderName, extra, finalBadge, collapseId, bodyOverride);
+      if (collapseId !== undefined) return pushFn(t, actionType, senderName, extra, finalBadge, collapseId);
+      return pushFn(t, actionType, senderName, extra, finalBadge);
     }),
   );
 }

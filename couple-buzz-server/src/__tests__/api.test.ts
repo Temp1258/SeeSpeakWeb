@@ -1223,7 +1223,7 @@ describe('POST /api/unpair', () => {
     expect(res.body.new_pair_code).toHaveLength(4);
 
     // Partner should receive push notification
-    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'unpair', 'Alice');
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'unpair', 'Alice', undefined, expect.any(Number));
 
     // Verify Alice is no longer paired
     const actionRes = await request(app)
@@ -1527,7 +1527,7 @@ describe('Daily Question', () => {
       .set('Authorization', `Bearer ${alice.access_token}`)
       .send({ answer: '测试' });
 
-    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'daily_answer', 'Alice');
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'daily_answer', 'Alice', undefined, expect.any(Number));
   });
 });
 
@@ -2256,7 +2256,7 @@ describe('Bucket List', () => {
       .set('Authorization', `Bearer ${alice.access_token}`)
       .send({ title: '新心愿' });
 
-    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'bucket_new', 'Alice');
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'bucket_new', 'Alice', undefined, expect.any(Number));
   });
 
   it('should include item title in bucket_complete push', async () => {
@@ -2279,6 +2279,7 @@ describe('Bucket List', () => {
       'bucket_complete',
       'Alice',
       { title: '一起去日本' },
+      expect.any(Number),
     );
   });
 });
@@ -2612,7 +2613,7 @@ describe('POST /api/urge', () => {
       .set('Authorization', `Bearer ${alice.access_token}`)
       .send({ type: 'question' });
     expect(res.status).toBe(200);
-    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'urge_question', 'Alice');
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'urge_question', 'Alice', undefined, expect.any(Number));
   });
 
   it('rejects invalid type', async () => {
@@ -2650,7 +2651,7 @@ describe('POST /api/daily-reaction', () => {
       .send({ type: 'question', reaction: 'up' });
     expect(res.status).toBe(200);
     expect(res.body.reaction).toBe('up');
-    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'react_question_up', 'Alice');
+    expect(mockPush).toHaveBeenCalledWith('test-device-token', 'react_question_up', 'Alice', undefined, expect.any(Number));
 
     // Visible in subsequent GET /daily-question
     const get = await request(app).get('/api/daily-question').set('Authorization', `Bearer ${alice.access_token}`);

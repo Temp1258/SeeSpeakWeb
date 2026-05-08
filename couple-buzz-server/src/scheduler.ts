@@ -78,13 +78,16 @@ export function startScheduler(dbOps: DbOps, pushFn: SendPushFn): void {
 }
 
 async function broadcastPush(dbOps: DbOps, pushFn: SendPushFn, type: string): Promise<void> {
-  const tokens = dbOps.getAllPairedUserTokens();
-  // Concurrent dispatch — @parse/node-apn uses HTTP/2 multiplexing so many
-  // pushes share one connection. Serial await would let a single slow /
-  // dead token stall the entire broadcast and overflow the 60s tick window
-  // once the user count grows.
+  // Fan out per user (not per token) so pushToUser can populate the APNs
+  // badge with each recipient's real unread total. Going through the raw
+  // pushFn here would bypass that and leave the icon badge unchanged —
+  // which is exactly the bug fixed by routing all pushes through
+  // pushToUser. Concurrent dispatch is preserved: @parse/node-apn uses
+  // HTTP/2 multiplexing so many pushes share one connection, and a single
+  // slow/dead token can't stall the rest within Promise.allSettled.
+  const userIds = dbOps.getAllPairedUserIds();
   await Promise.allSettled(
-    tokens.map(({ device_token }) => pushFn(device_token, type, ''))
+    userIds.map((userId) => pushToUser(dbOps, pushFn, userId, type, ''))
   );
 }
 
