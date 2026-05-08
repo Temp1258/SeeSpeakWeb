@@ -87,7 +87,7 @@ function getBjt7amDate(): string {
 }
 
 function getLocalHour(timezone: string): number {
-  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: safeTimezone(timezone), hour: 'numeric', hour12: false }));
+  const h = parseInt(new Date().toLocaleString('en-US', { timeZone: safeTimezone(timezone), hour: 'numeric', hour12: false }), 10);
   return h === 24 ? 0 : h;
 }
 
@@ -629,7 +629,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(400).json({ error: 'Invalid action_type' });
     }
 
-    const actionId = typeof action_id === 'number' ? action_id : parseInt(action_id);
+    const actionId = typeof action_id === 'number' ? action_id : parseInt(action_id, 10);
     if (isNaN(actionId)) return res.status(400).json({ error: 'action_id must be a valid number' });
 
     const user = dbOps.getUser(userId);
@@ -659,7 +659,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // GET /api/history
   router.get('/history', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const limit = parseInt(req.query.limit as string) || 50;
+    const limit = parseInt(req.query.limit as string, 10) || 50;
 
     const user = dbOps.getUser(userId);
     if (!user) {
@@ -677,8 +677,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
     const actions = dbOps.getHistory(pairId, Math.min(limit, 200));
 
-    // Group reactions by parent action id
-    const allReactions = dbOps.getHistoryReactions(pairId);
+    // Group reactions by parent action id. Pass the actions' ids so
+    // the DB only fetches reactions tied to this page — older pairs
+    // used to lose old reactions to a hard LIMIT 500 cutoff.
+    const allReactions = dbOps.getHistoryReactions(pairId, actions.map((a) => a.id));
     const reactions: Record<number, typeof allReactions> = {};
     for (const r of allReactions) {
       if (r.reply_to !== null) {
@@ -1245,7 +1247,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
   // GET /api/mailbox/archive
   router.get('/mailbox/archive', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const limit = parseInt(req.query.limit as string) || 10;
+    const limit = parseInt(req.query.limit as string, 10) || 10;
 
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });

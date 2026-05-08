@@ -22,6 +22,12 @@ const IslandToast = forwardRef<IslandToastHandle, Props>(({ top = 8 }, ref) => {
   const opacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.85)).current;
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // FIFO queue. Old behavior was "latest wins" — a burst of show()
+  // calls (e.g. a batch operation that toasts per item) collapsed to
+  // only the final message visible. The queue plays each in turn so
+  // every piece of feedback is actually surfaced.
+  const queueRef = useRef<{ msg: string; durationMs: number }[]>([]);
+  const playingRef = useRef(false);
 
   const animateIn = () => {
     translateY.setValue(-60);
@@ -45,35 +51,43 @@ const IslandToast = forwardRef<IslandToastHandle, Props>(({ top = 8 }, ref) => {
     });
   };
 
+  const playNext = () => {
+    const next = queueRef.current.shift();
+    if (!next) {
+      playingRef.current = false;
+      return;
+    }
+    playingRef.current = true;
+    setMessage(next.msg);
+    requestAnimationFrame(() => animateIn());
+    hideTimer.current = setTimeout(() => animateOut(playNext), next.durationMs);
+  };
+
   useImperativeHandle(ref, () => ({
     show: (msg: string, durationMs = 2400) => {
-      if (hideTimer.current) {
-        clearTimeout(hideTimer.current);
-        hideTimer.current = null;
-      }
-      setMessage(msg);
-      // Defer animateIn one frame so the new view is mounted with initial
-      // values before the animation begins.
-      requestAnimationFrame(() => animateIn());
-      hideTimer.current = setTimeout(() => animateOut(), durationMs);
+      queueRef.current.push({ msg, durationMs });
+      if (!playingRef.current) playNext();
     },
     hide: () => {
       if (hideTimer.current) {
         clearTimeout(hideTimer.current);
         hideTimer.current = null;
       }
+      queueRef.current = [];
+      playingRef.current = false;
       animateOut();
     },
   }), []);
 
-  // On unmount: clear any pending timer so its callback doesn't fire after
-  // the component is gone, which would warn about setState on an unmounted
-  // component (the parent modal may close mid-toast).
+  // On unmount: clear any pending timer + drop the queue so timers /
+  // queued setMessage don't fire after the component is gone.
   useEffect(() => () => {
     if (hideTimer.current) {
       clearTimeout(hideTimer.current);
       hideTimer.current = null;
     }
+    queueRef.current = [];
+    playingRef.current = false;
   }, []);
 
   if (!message) return null;

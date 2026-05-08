@@ -61,12 +61,13 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
     setSubmitting(false);
   };
 
-  // Tick only during the active cooldown window. lastUrgeMs is bumped by
-  // handleUrge → effect re-runs → starts a 1Hz interval that re-renders
-  // until cooldown expires, then self-stops. Avoids burning a redraw every
-  // second of the user's life on this screen.
+  // Cooldown countdown lives in state, updated by a 1Hz interval that
+  // self-stops when it hits zero. Previous version computed it from
+  // Date.now() in the render body and used a `forceTick` setState to
+  // re-render — that worked but made render impure (different output
+  // per call) and re-computed the value on every parent-driven render.
   const [lastUrgeMs, setLastUrgeMs] = useState(0);
-  const [, forceTick] = useState(0);
+  const [cooldownLeft, setCooldownLeft] = useState(0);
 
   const handleUrge = useCallback(async () => {
     const now = Date.now();
@@ -79,7 +80,12 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       await api.urge('question');
+      // Set both atoms in the same handler — React batches them into one
+      // commit, so the cooldown label appears on the very first render
+      // after the urge instead of flashing "⏰ 快答！" for a frame while
+      // waiting for the effect below to seed cooldownLeft.
       setLastUrgeMs(Date.now());
+      setCooldownLeft(URGE_COOLDOWN_MS);
       Alert.alert('', '已经催 ta 了 ⏰');
     } catch (e: any) {
       Alert.alert('', e.message || '催促失败');
@@ -88,15 +94,21 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
     }
   }, [lastUrgeMs]);
   useEffect(() => {
-    if (lastUrgeMs === 0) return;
-    if (Date.now() - lastUrgeMs >= URGE_COOLDOWN_MS) return;
+    if (lastUrgeMs === 0) {
+      setCooldownLeft(0);
+      return;
+    }
+    const computeLeft = () => Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeMs));
+    const initial = computeLeft();
+    setCooldownLeft(initial);
+    if (initial === 0) return;
     const t = setInterval(() => {
-      forceTick(n => n + 1);
-      if (Date.now() - lastUrgeMs >= URGE_COOLDOWN_MS) clearInterval(t);
+      const left = computeLeft();
+      setCooldownLeft(left);
+      if (left === 0) clearInterval(t);
     }, 1000);
     return () => clearInterval(t);
   }, [lastUrgeMs]);
-  const cooldownLeft = Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeMs));
   const inCooldown = cooldownLeft > 0;
 
   const handleReact = useCallback(async (reaction: 'up' | 'down') => {

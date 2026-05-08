@@ -25,6 +25,7 @@ import { COLORS, ACTION_EMOJI, ACTION_CATEGORIES, ActionConfig } from '../consta
 import { api, HistoryAction } from '../services/api';
 import { subscribe } from '../services/socket';
 import { storage } from '../utils/storage';
+import { getDeviceTimezone } from '../utils/timezone';
 import ActionRecord from '../components/ActionRecord';
 import { SpringPressable } from '../components/SpringPressable';
 import { useToolbarSlot } from '../utils/toolbarSlot';
@@ -117,13 +118,9 @@ function formatTimeInZone(dateStr: string, timezone: string): string {
   }
 }
 
-function getDeviceTimezone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
-  } catch {
-    return 'Asia/Shanghai';
-  }
-}
+// Shared cache lives in utils/timezone — a single Intl lookup per
+// session, refreshed only on app-foreground via the AppState wiring in
+// App.tsx so a Settings-app timezone change still surfaces.
 
 // Insert the unread-divider into the section that contains the first PARTNER
 // action with id > boundaryId. Self-sent messages don't count as "unread" —

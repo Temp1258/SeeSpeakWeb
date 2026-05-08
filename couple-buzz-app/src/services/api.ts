@@ -519,13 +519,11 @@ export interface StickyPostResponse {
   posted_at: string;
 }
 
-function getDeviceTimezone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
-  } catch {
-    return 'Asia/Shanghai';
-  }
-}
+// Imported from utils/timezone (re-exported below for callers that
+// expect the symbol on the api module surface). The shared cache means
+// repeated API calls don't pay the Intl lookup cost each time.
+import { getDeviceTimezone } from '../utils/timezone';
+export { getDeviceTimezone };
 
 export const api = {
   register(name: string, password: string): Promise<RegisterResponse> {

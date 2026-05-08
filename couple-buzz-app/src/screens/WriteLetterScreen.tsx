@@ -108,46 +108,54 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   // throw away the user's typing. The draft is cleared on successful submit
   // (in runSubmit) — anything else (close, swipe-down) preserves it.
   useEffect(() => {
-    if (visible) {
-      setStage('write');
-      setRecipient('partner');
-      setSubmitting(false);
-      setSubmitted(false);
-      setDatePart(null);
-      // Reset animated values so the next sending stage starts fresh.
-      letterY.setValue(0);
-      letterScale.setValue(1);
-      letterRotate.setValue(0);
-      letterOpacity.setValue(1);
-      mailboxBounce.setValue(0);
+    if (!visible) return;
+    setStage('write');
+    setRecipient('partner');
+    setSubmitting(false);
+    setSubmitted(false);
+    setDatePart(null);
+    // Reset animated values so the next sending stage starts fresh.
+    letterY.setValue(0);
+    letterScale.setValue(1);
+    letterRotate.setValue(0);
+    letterOpacity.setValue(1);
+    mailboxBounce.setValue(0);
 
-      // Load saved draft + sender/partner identity bits, then seed the
-      // datetime picker to "tomorrow 09:00" in the sender's timezone.
-      // Draft now lives on the server (Step 4) so the user can pick up
-      // where they left off on any of their devices.
-      Promise.all([
-        api.getLetterDraft().catch(() => ({ draft: '' })),
-        storage.getUserName(),
-        storage.getTimezone(),
-        storage.getPartnerRemark(),
-        storage.getPartnerTimezone(),
-      ]).then(([draftResp, n, tz, r, ptz]) => {
-        setContent(draftResp.draft || '');
-        if (n) setMyName(n);
-        if (r) setPartnerRemark(r);
-        if (ptz) setPartnerTz(ptz);
-        const userTz = tz || 'Asia/Shanghai';
-        if (tz) setMyTz(userTz);
-        const today = localDateParts(userTz);
-        // Tomorrow: roll today's date by +1 in UTC then read parts back.
-        const tmrUtc = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
-        setPickYear(tmrUtc.getUTCFullYear());
-        setPickMonth(tmrUtc.getUTCMonth() + 1);
-        setPickDay(tmrUtc.getUTCDate());
-        setPickHour(9);
-        setPickMinute(0);
-      }).catch(() => {});
-    }
+    // Load saved draft + sender/partner identity bits, then seed the
+    // datetime picker to "tomorrow 09:00" in the sender's timezone.
+    // Draft now lives on the server (Step 4) so the user can pick up
+    // where they left off on any of their devices.
+    //
+    // The cancelled flag prevents a stale-promise overwrite when the
+    // user closes-and-reopens the modal faster than the network round
+    // trip resolves: without it, the first open's then() handler would
+    // fire after the second open had already populated state and clobber
+    // it with an outdated draft.
+    let cancelled = false;
+    Promise.all([
+      api.getLetterDraft().catch(() => ({ draft: '' })),
+      storage.getUserName(),
+      storage.getTimezone(),
+      storage.getPartnerRemark(),
+      storage.getPartnerTimezone(),
+    ]).then(([draftResp, n, tz, r, ptz]) => {
+      if (cancelled) return;
+      setContent(draftResp.draft || '');
+      if (n) setMyName(n);
+      if (r) setPartnerRemark(r);
+      if (ptz) setPartnerTz(ptz);
+      const userTz = tz || 'Asia/Shanghai';
+      if (tz) setMyTz(userTz);
+      const today = localDateParts(userTz);
+      // Tomorrow: roll today's date by +1 in UTC then read parts back.
+      const tmrUtc = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
+      setPickYear(tmrUtc.getUTCFullYear());
+      setPickMonth(tmrUtc.getUTCMonth() + 1);
+      setPickDay(tmrUtc.getUTCDate());
+      setPickHour(9);
+      setPickMinute(0);
+    }).catch(() => {});
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 

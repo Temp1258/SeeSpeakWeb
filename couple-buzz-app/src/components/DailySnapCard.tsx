@@ -15,21 +15,27 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
   const [urging, setUrging] = useState(false);
   const [reacting, setReacting] = useState(false);
 
-  // Tick only during the active cooldown window. setLastUrgeMs bumps it →
-  // effect runs → 1Hz tick re-renders the label until cooldown expires,
-  // then self-stops. Avoids a permanent 1Hz redraw on the 每日 tab.
+  // Cooldown countdown lives in state — same shape as DailyQuestionCard.
+  // Old version computed cooldownLeft from Date.now() in the render body
+  // and used a forceTick setState to redraw, which made render impure.
   const [lastUrgeMs, setLastUrgeMs] = useState(0);
-  const [, forceTick] = useState(0);
+  const [cooldownLeft, setCooldownLeft] = useState(0);
   useEffect(() => {
-    if (lastUrgeMs === 0) return;
-    if (Date.now() - lastUrgeMs >= URGE_COOLDOWN_MS) return;
+    if (lastUrgeMs === 0) {
+      setCooldownLeft(0);
+      return;
+    }
+    const computeLeft = () => Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeMs));
+    const initial = computeLeft();
+    setCooldownLeft(initial);
+    if (initial === 0) return;
     const t = setInterval(() => {
-      forceTick(n => n + 1);
-      if (Date.now() - lastUrgeMs >= URGE_COOLDOWN_MS) clearInterval(t);
+      const left = computeLeft();
+      setCooldownLeft(left);
+      if (left === 0) clearInterval(t);
     }, 1000);
     return () => clearInterval(t);
   }, [lastUrgeMs]);
-  const cooldownLeft = Math.max(0, URGE_COOLDOWN_MS - (Date.now() - lastUrgeMs));
   const inCooldown = cooldownLeft > 0;
 
   const load = useCallback(async () => {
@@ -189,7 +195,11 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
               try {
                 await api.urge('snap');
+                // Set both atoms in the same handler so the next render
+                // reflects the cooldown without a one-frame "⏰ 拍照！"
+                // flash while the effect seeds cooldownLeft.
                 setLastUrgeMs(Date.now());
+                setCooldownLeft(URGE_COOLDOWN_MS);
                 Alert.alert('', '已经催 ta 了 ⏰');
               } catch (e: any) {
                 Alert.alert('', e.message || '催促失败');

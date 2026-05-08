@@ -336,7 +336,12 @@ export interface DbOps {
   // so a re-pair after a different intermediate relationship doesn't
   // leak earlier-pair history.
   getHistory(pairId: string, limit: number): Action[];
-  getHistoryReactions(pairId: string): Action[];
+  // Returns reactions whose reply_to is one of the supplied parent
+  // action ids. Empty input → []. Caller (the /api/history route)
+  // passes the ids of the actions it just fetched, so the result is
+  // aligned with the visible page — no LIMIT cutoff that could drop
+  // reactions for older messages once a couple has > 500 reactions.
+  getHistoryReactions(pairId: string, parentActionIds: number[]): Action[];
   // Issue a brand-new session at register/login time. Returns the
   // generated session_id and whether this session was made primary
   // (true iff the user had no other primary at the moment of insert —
@@ -1088,6 +1093,12 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     );
 
     CREATE INDEX IF NOT EXISTS idx_actions_time ON actions(created_at DESC);
+    -- /api/history filters by pair_id and orders by created_at DESC. Without
+    -- this composite the planner has to scan idx_actions_time and re-filter
+    -- by pair_id, which degrades visibly once a couple's history grows past
+    -- ~10k rows. The DESC order match means the planner can serve the page
+    -- straight off the index without an explicit sort step.
+    CREATE INDEX IF NOT EXISTS idx_actions_pair_time ON actions(pair_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
     CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
@@ -1693,15 +1704,19 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     WHERE a.reply_to = ? AND a.user_id = ?
   `);
   const stmtUpdateReaction = db.prepare('UPDATE actions SET action_type = ? WHERE id = ?');
-  const getReactionsStmt = db.prepare(`
+  // Reactions for the current page of /api/history actions. Built per
+  // call because the IN(...) placeholder count varies with the page
+  // size. Old version capped at LIMIT 500 across the entire pair —
+  // long-term couples could lose reactions for older messages once the
+  // 500-most-recent cutoff overflowed past the visible range.
+  const buildReactionsForActionsStmt = (n: number) => db.prepare(`
     SELECT a.id, a.user_id, a.action_type, a.sender_timezone, a.reply_to, a.created_at,
            CASE WHEN a.sender_name != '' THEN a.sender_name ELSE u.name END AS user_name
     FROM actions a
     JOIN users u ON a.user_id = u.id
-    WHERE a.reply_to IS NOT NULL
+    WHERE a.reply_to IN (${Array.from({ length: n }, () => '?').join(',')})
       AND a.pair_id = ?
     ORDER BY a.created_at DESC
-    LIMIT 500
   `);
   const stmtInsertRefreshToken = db.prepare(`
     INSERT INTO refresh_tokens (
@@ -2525,8 +2540,14 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return getHistoryStmt.all(pairId, limit) as Action[];
     },
 
-    getHistoryReactions(pairId: string): Action[] {
-      return getReactionsStmt.all(pairId) as Action[];
+    getHistoryReactions(pairId: string, parentActionIds: number[]): Action[] {
+      if (parentActionIds.length === 0) return [];
+      // SQLite's compiled-statement parameter limit is 999 by default;
+      // /api/history caps `limit` at 200, so we never get close. Still,
+      // be explicit so a future caller can't blow up the engine.
+      const ids = parentActionIds.slice(0, 999);
+      const stmt = buildReactionsForActionsStmt(ids.length);
+      return stmt.all(...ids, pairId) as Action[];
     },
 
     insertRefreshToken(userId, tokenHash, expiresAt, sessionId, deviceInfo, isPrimary): void {

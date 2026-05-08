@@ -31,6 +31,7 @@ import { api, AuthError } from './src/services/api';
 import { connectSocket, disconnectSocket, subscribe } from './src/services/socket';
 import { hasUnreadInboxItems, hasFreshOutboxItems } from './src/utils/inboxUnread';
 import { subscribeOutboxChanged } from './src/utils/outboxEvents';
+import { refreshDeviceTimezoneCache } from './src/utils/timezone';
 import SetupScreen from './src/screens/SetupScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
@@ -370,6 +371,18 @@ export default function App() {
   const [overlay, setOverlay] = useState<React.ReactNode>(null);
   const toolbarSlot = useMemo(() => ({ set: setOverlay }), []);
 
+  // Drop the cached timezone on every foreground transition so a user
+  // who changed iOS Settings → 通用 → 日期与时间while the app was in
+  // the background sees the new value reflected on the next API call /
+  // history grouping. Without this, the cached value sticks until app
+  // kill — confusing for cross-timezone travel.
+  useEffect(() => {
+    const sub = RNAppState.addEventListener('change', (next) => {
+      if (next === 'active') refreshDeviceTimezoneCache();
+    });
+    return () => sub.remove();
+  }, []);
+
   useEffect(() => {
     (async () => {
       const userId = await storage.getUserId();
@@ -445,9 +458,33 @@ export default function App() {
       }
     };
 
-    check();
-    pollRef.current = setInterval(check, 3000);
-    return () => clearInterval(pollRef.current);
+    // Pair-waiting screen polls every 3s — but only while the app is
+    // foregrounded. Without this, a user who registers and pockets the
+    // phone with the waiting screen still up keeps firing /status every
+    // 3s in the background, draining battery / data over time. We pause
+    // on AppState !== 'active' and resume on the next 'active' edge.
+    const startPolling = () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      check();
+      pollRef.current = setInterval(check, 3000);
+    };
+    const stopPolling = () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = undefined;
+      }
+    };
+
+    if (RNAppState.currentState === 'active') startPolling();
+    const sub = RNAppState.addEventListener('change', (next) => {
+      if (next === 'active') startPolling();
+      else stopPolling();
+    });
+
+    return () => {
+      sub.remove();
+      stopPolling();
+    };
   }, [appState]);
 
   // Bootstrap last-seen-id once on ready. The unread red dot is now driven
