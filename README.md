@@ -2,8 +2,8 @@
 
 > 一款专为情侣两人设计的亲密互动 App。把日常的小事攒成关系里的仪式感。
 
-[![Release](https://img.shields.io/badge/release-v1.1.5-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.1.5)
-[![Tests](https://img.shields.io/badge/tests-95%20passing-success)](./couple-buzz-server)
+[![Release](https://img.shields.io/badge/release-v1.2.7-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.7)
+[![Tests](https://img.shields.io/badge/tests-130%20passing-success)](./couple-buzz-server)
 [![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-iOS-lightgrey)]()
 [![Stack](https://img.shields.io/badge/stack-RN%20%2B%20Expo%20%2B%20Node-brightgreen)]()
@@ -52,14 +52,14 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 - 🗑️ **废件箱** — 从收件箱删除的信件可以在这里恢复（v1.1 前叫「垃圾篓」）
 - 📝 **小贴吧** — 双方共享的便利贴墙（v1.1 新增）
 
-底部固定的 ✉️ pill 进入**统一写信流程**（次日达 / 择日达分支由封信后选择）。
+底部固定的 ✉️ pill 进入**统一写信流程**（次日达 / 择日达分支由封信后选择）。底部还有 📤 **发件箱**入口（OutboxScreen），列出自己已寄出但还没送达的次日达 / 择日达，按上下滑动浏览，已送达自动从列表里消失；新寄出的灵动岛 toast + 信箱 tab 红点立刻点亮，无需等推送回环。
 
 #### ✉️ 统一写信流程（WriteLetterScreen）
 **5 个阶段**：`write → sealing → kind → capsuleDetails → sending`
 
 - **写**：奶油色信纸（`#FAF6E8`）+ 棕墨字（`#3D2A19`）；正式信件版式：**致 [对方/自己] · 正文 · 落款 [自己] · 字数计数**；iOS 键盘上方 inline accessory 「完成」按钮一键收键盘；草稿 400ms debounce 自动落 AsyncStorage，关掉重开还在
 - **封**：SealAnimation（信纸 → 信封 → 火漆印）~1.3s，作者本人也看不到自己写的内容（`my_sealed` 服务端标志，writing/sealing 阶段不返回 my_message；客户端草稿 setter 在 sealing 之后失活，避免 stale closure 把 sealing 阶段的 UI 草稿写入）
-- **选**：📮 次日达（500 字上限）/ 💌 择日达（1000 字上限），二选一卡片
+- **选**：📮 次日达（500 字上限）/ 💌 择日达（1000 字上限），二选一卡片；次日达**单场可多发**（同一窗口写多少封都行，到点一起送达），不再是「一场一封」的限制
 - **择日达详情**：年/月/日 + 时/分**五段下拉选择器**（不再是日历点击，6 年窗口，月日联动 clamp）；**双时区即时预览**——同时显示「我（北京时间）：04-27 20:34」与「ta 那边收到时：04-28 04:34」，让对方拿到的也是整点钟整分；可见性切换 🪞 给自己 / 💕 给对方
 - **寄**：信件缩小 + 微微旋转 + 沿 Y 轴落入信箱图标（~520ms）+ 信箱小弹跳（~180ms），左右随机偏置增加变化
 
@@ -100,25 +100,32 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
   - **创建者区分**：每条心愿左侧 4px 彩条 + 右侧 chip，自己粉色（`COLORS.kiss`）/ 对方浅蓝（`#7AB8D6`）
   - 完成时二次确认 + **屏幕烟花动画庆祝** + 推送带具体心愿名给对方
 
-### 📊 数据（Stats）
+### 📊 数据（Stats / Settings）
 - **双方 ID 卡片**：左右并列展示
 - **互动统计**：总互动数、双方对比、最爱表情 Top 5、按月趋势
 - **恋爱周报**：本周互动量、与上周对比、连续天数、温度评分（互动 + 问答 + 打卡 + 连续天数四项加权）
 - **昵称 + 备注 配对行**：双方昵称、彼此私密备注左右镜像并排，编辑后居中弹出灵动岛保存 pill
 - **昵称 + 时区设置**：时区像 ID 一样并列显示，点选即自动保存
+- **多设备列表（DeviceListCard）**：列出当前账号所有登录中的设备（设备名 / 机型 / 系统 / App 版本 / 上次活跃时间）；任一为「主设备」，本机标注「本机」徽章；可一键设主设备 / 强制下线某台 / 自我下线；强制下线即时生效（被踢端下次请求 401，access token 也会被 token_version 拒绝），不用等 token 自然过期
+- **解除绑定**：双侧均可发起；解绑后双方所有 couple-scoped 数据（History / 信箱 / 小贴吧 / 心愿 / 纪念日 / 每日问答…）保留 90 天，期间重新绑定**整套数据自动复活**，过期才硬删
 
 ---
 
 ## 系统能力
 
-- **iOS WidgetKit 小组件**：桌面卡片框架已搭好（`couple-buzz-app/targets/widget/`），数据接通排期 v1.2
+- **iOS WidgetKit 小组件**：桌面卡片框架已搭好（`couple-buzz-app/targets/widget/`），数据接通排期 v1.3
 - **OTA 热更新**：纯 JS 改动通过 EAS Updates 秒推到手机，无需重 build
-- **JWT 双 token**：access 15 分钟 / refresh 90 天；refresh token 自动轮换；token_version 字段支持即时吊销所有 session；并发刷新加锁防 race；轮换走单条 SQLite 事务，崩在中间不会把 session 锁死
+- **JWT 双 token + 多设备会话**：access 15 分钟 / refresh 90 天，refresh token 自动轮换 + 单事务化轮换 + 并发刷新加锁；每条 refresh token 绑定一个 `session_id`（设备名 / 机型 / 系统 / App 版本 / 上次活跃 / `is_primary` / `revoked` 都在 `refresh_tokens` 行内），auth 中间件每次请求都过 `isSessionActive()`，强制下线 / 主设备切换即时生效；token_version 字段保留作全账号即时吊销开关
+- **多设备 APNs 推送**：`device_tokens` 表（`apns_token` PK + `user_id` + `session_id`）替代 `users.device_token` 单值字段，一个用户在 N 台设备登录就 N 行；`pushToUser` 自动 fan-out 到所有设备，APNs 410 失效 token 自动清理；与 sessions 关联的 token 在 `DELETE /sessions/:sid` 时一并删
+- **跨端状态同步上服务端**：每日已读（`daily_seen_date / pa / ps`）/ 收件箱已读（`inbox_last_seen`）/ 发件箱已读（`outbox_last_seen`）/ 写信草稿（`write_letter_draft`）以前都只在 AsyncStorage，换设备 / 重装就丢；现在全部存到 `users` 表对应字段，多设备状态实时一致；写入路径加 only-advance 守卫，旧请求乱序到达不会把游标 roll back
+- **pair_id 关系实体 + 90 天数据 TTL**：`couples` 表把每段「关系」抽象成稳定 10 字符 `pair_id`（用户 a < b lex 排序保证唯一），所有 couple-scoped 数据（actions / mailbox / capsules / sticky / important_dates / daily_answers / ritual / inbox_actions）都打 `pair_id` 标签；解绑写 `ended_at`，**90 天内**重绑同一对人 → `ended_at` 清空，全套数据复活；TTL 调度器 03:00 UTC 每日扫一次过期 couple 硬删
+- **APNs badge 全推送覆盖**：`pushToUser` 在 caller 没传 badge 时兜底取真实跨功能未读数（History + 信箱 + 已解锁 capsule + 小贴吧 partner block 累加，floor=1），`scheduler.broadcastPush` 也按用户 fan-out 走同一管道，所有推送类型都会刷新桌面图标红圈（v1.2.6 修复）
 - **限流分层**：注册 / 配对 / 认证 / 普通 API 各自独立的速率限制
 - **Socket 触摸限速**：服务端 5 events / 1s 的滚动窗口拦截畸形/恶意客户端，省电省 APNs 配额
-- **多设备并发登录**：服务端 presence 用 `Map<userId, Set<socketId>>` 维护，手机 + iPad 同时在线不再误报对方掉线，touch_end 仅在最后一个 touching 设备离开时广播
+- **多设备并发 socket**：presence 用 `Map<userId, Set<socketId>>` 维护，手机 + iPad 同时在线不再误报对方掉线，touch_end 仅在最后一个 touching 设备离开时广播
 - **Presence 防闪 / 防残留**：3s debounce 才广播 `presence_both` 避免快速重连闪烁；disconnect 留 1.5s grace + stale-closure guard（旧 closure 检测到 presence 已被新 session 覆盖直接 bail）；on-connect 给孤身 socket 主动补一次 `presence_single` 治愈历史残留状态
 - **Capsule 解锁推送防重复**：`time_capsules.notified_at` 列 + 调度器分钟级 dedup key，进程重启 / 时钟漂移 / 多次扫描都不会让对方收到第二遍开信通知
+- **响应式适配**：爱心心跳 / 触摸圆环 / 写信 pill / 卡片高度 / 信纸字号 / iPad 信件宽度等 7 处按屏幕尺寸动态计算，从 iPhone SE 到 iPad mini 都不变形
 - **健康检查**：`GET /health`
 - **下拉刷新**：每日 / 信箱 / 数据三 tab 都支持
 - **加密备份**：每日 03:00 GPG 公钥加密 SQLite，私钥离线保管，详见 [`couple-buzz-server/docs/BACKUP.md`](./couple-buzz-server/docs/BACKUP.md)
@@ -133,6 +140,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 - **deep-link 路由**：`react-navigation` linking 配置 + `couplebuzz://` scheme，cold-launch 用 `getInitialURL()`，warm-tap 用 `addNotificationResponseReceivedListener` 订阅；点击通知后稳定跳到对应 tab，告别手写 nav-queue
 - **iOS 锁屏合并**：相同对话方向的通知合并展示，避免连续摸一摸刷屏
 - **APNs payload 兼容**：服务端把所有自定义字段包在 `body` 顶级 key 下，解决 expo-notifications 从 `userInfo['body']` 取数据的兼容性问题
+- **桌面图标 badge 全覆盖**：以前只有废话区表情 / 反应 / 摸一摸三种推送会带 `aps.badge`，sticky / 信箱 / 每日 / 快照 / 心愿 / 纪念日 / 仪式 / capsule / 催答催拍 / 解除配对 / 周报 / 天气等 ~25 种推送都把字段省掉，APNs 规范是「缺 badge → 不动图标」，叠加客户端进前台清 0，桌面红圈一直显示不出来；v1.2.6 起 `pushToUser` 兜底取真实跨功能未读数（floor=1），所有推送类型都会刷新红圈
 - **小贴吧实时联动**：`sticky_posted` / `sticky_appended` 走 APNs，`sticky_update` 走 socket，信箱 tab 的红点 + 入口卡 🚩 同时刷新；点击通知 deep-link 直接进信箱
 
 ---
@@ -150,13 +158,13 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 
 ### 服务端
 - **Node.js 20 · Express 4 · TypeScript**
-- SQLite（`better-sqlite3` WAL 模式，启动时自动迁移 schema；新表 `sticky_notes` / `sticky_blocks` / `sticky_seen` 自带覆盖索引）
+- SQLite（`better-sqlite3` WAL 模式，启动时自动迁移 schema；表分组：用户 / 关系 `couples` / 设备 token `device_tokens` / 互动 `actions` / 信箱 `mailbox` + `time_capsules` + `inbox_actions` / 每日 `daily_answers` + `daily_snaps` + `daily_reactions` + `rituals` / 小贴吧 `sticky_notes` + `sticky_blocks` + `sticky_seen` / 心愿 `bucket_items` / 纪念日 `important_dates`）
 - Socket.IO Server（一次性 ticket 30s TTL 鉴权，多设备 socket Set，重连权威 presence 快照，touch 5/1s 滚动窗口限速）
-- `@parse/node-apn`（APNs HTTP/2 推送，失效 token 自动清理，payload 包 `body` 兼容 expo-notifications）
+- `@parse/node-apn`（APNs HTTP/2 推送 + 多设备 fan-out + 失效 token 自动清理 + payload 包 `body` 兼容 expo-notifications + badge 全覆盖兜底）
 - Multer（图片上传 5MB + image MIME 白名单 + atomic tmp/rename 防覆写）
-- JWT + scrypt 密码哈希 + refresh token 哈希存储 + 并发轮换锁 + 事务化轮换
-- node-cron 调度（mailbox reveal / capsule unlock，capsule 推送 `notified_at` 列持久 dedup）
-- Jest + supertest（**95 个接口测试用例**）
+- JWT + scrypt 密码哈希 + refresh token 哈希存储 + 并发轮换锁 + 事务化轮换 + per-session 设备元信息 + 强制下线即时生效
+- node-cron 调度（mailbox reveal / capsule unlock / 周报 / couple TTL 03:00 UTC 硬删，capsule 推送 `notified_at` 列持久 dedup）
+- Jest + supertest（**130 个接口测试用例**）
 - express-rate-limit
 - GPG 加密备份 + cron + 离线私钥
 
@@ -168,6 +176,8 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 |---|---|
 | 密码 | scrypt + `crypto.timingSafeEqual`（防时序攻击）|
 | Token | JWT 双 token + token_version 即时吊销 + refresh token 哈希存储 + 自动轮换 + 并发刷新锁 + 单条事务化轮换 |
+| 多设备会话 | per-session `is_primary / revoked / device_*` 元数据；强制下线立刻吊销该 session（auth 中间件每请求过 `isSessionActive`）；DELETE /sessions/:sid 同时清掉绑定的 device_token；自我下线返回新登录入口 |
+| pair_id 关系隔离 | `couples` 表唯一 pair_id（user_a < user_b lex 排序）；所有 couple-scoped 数据贴 pair_id 标签；解绑写 `ended_at` 进入 90 天 grace；中间换过别的对象再换回来不会读到错误关系的旧数据；TTL 后硬删 |
 | 图片访问 | HMAC 签名 URL（1h TTL + timing-safe verify + 路径正则严格） |
 | WebSocket | 一次性 ticket 30s TTL + origin 白名单 + 多设备 Set 维护 + touch 5/1s 滚动窗口限速 |
 | SQL 注入 | 全部 prepared statements 参数化绑定，零字符串拼接 |
@@ -177,6 +187,9 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 | 随机源 | `crypto.randomInt` 生成用户 ID / 配对码 |
 | 限流 | 注册 / 配对 / 认证 / API 分层 + socket touch 限速 |
 | Badge 计数 | 服务端真实未读数 + clamp 防客户端越权推进读位指针 |
+| Badge 全覆盖 | `pushToUser` 在 caller 不传 badge 时兜底取跨功能未读总数（floor=1），所有推送类型都会刷新桌面图标；`scheduler.broadcastPush` 也按用户 fan-out 走同一管道，避免直调 sendPush 绕过 |
+| 跨端状态同步 | daily_seen / inbox_seen / outbox_seen / letter_draft 全部上 server 字段，only-advance SQL 守卫拒绝旧客户端 roll back 已读游标 |
+| 快照反窥探 | 对方拍照后自己未拍时不下发其照片 URL，避免「先看对方再决定自己拍什么」的偷看；`daily_snaps` 接口按对称性裁掉敏感字段 |
 | 时间胶囊 | self 可见性服务端校验（防 partner 猜 id 越权读取） |
 | 次日达内容封存 | writing/sealing 阶段服务端不返回作者自己的 my_message，加 my_sealed 标志；客户端草稿 setter 在 sealing 后失活，避免 stale closure 把 UI 草稿覆写 sealed 内容 |
 | Inbox 软删除 | inbox_actions 表 per-recipient 状态机（trashed / purged）；archive、capsules、open endpoint 三处统一拦截 |
@@ -187,7 +200,79 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 | Presence 残留 | disconnect 1.5s grace + stale-closure guard（旧 closure 通过身份 token 比对识别已被新 session 覆盖）+ on-connect 给孤身 socket 补 `presence_single` |
 | 数据备份 | GPG 公钥加密（AES-256），私钥离线 U 盘 + 密码管理器 passphrase |
 
-### v1.1.5 修复清单（[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.1.5)）
+### v1.2.6（2026-05-07，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.6)）
+
+**APNs badge 全推送覆盖**
+
+- `pushToUser` 在 caller 没传 badge 时兜底取真实跨功能未读数（History + 信箱 + 已解锁 capsule + 小贴吧 partner block 累加，floor=1，确保至少亮红圈）
+- `scheduler.broadcastPush` 改为按用户 fan-out 走 `pushToUser`（之前直接调 `sendPush` 绕过 badge 兜底，定时广播全部漏掉 badge）
+- `mailbox.created_at`（SQLite 默认 `'YYYY-MM-DD HH:MM:SS'`）vs `inbox_last_seen`（ISO 带 `T` `Z`）lex 比较坑用 `datetime()` 归一化（` ` < `T` 否则 marker 永远显得更晚，未读永远算 0）
+- 测试 6 处 mockPush 断言补 badge arg；总数 130 个接口测试 pass
+
+### v1.2.5（2026-05-06）
+
+**多设备 + 跨端同步**
+
+- **多设备会话管理**：`refresh_tokens` 拓展 per-session 元数据（`device_name / device_model / device_os / app_version / last_active / is_primary / revoked`）；新增 `/api/sessions` GET / POST `/sessions/:sid/primary` / DELETE `/sessions/:sid`；auth 中间件每请求过 `isSessionActive` 让强制下线即时生效；DeviceListCard 在 Settings tab 列出所有设备 + 主设备徽章 + 本机徽章 + 一键切主设备 / 强制下线
+- **多设备 APNs 推送**：`device_tokens` 表（`apns_token` PK + `user_id` + `session_id` + `updated_at`）替代 `users.device_token` 单值；`pushToUser` fan-out 到一个用户的全部 token；session 注销时同步删 token；APNs 410 失效自动 evict
+- **跨端状态全部上服务端**：`daily_seen_date / pa / ps`、`inbox_last_seen`、`outbox_last_seen`、`write_letter_draft` 改成 `users` 表字段，多设备状态实时一致；only-advance UPDATE 守卫旧客户端不会 roll back 已读游标
+- **上传可靠性**：snap 上传 401 主动续期；超大 multer payload catch 兜底；429 不再误判登出（区分限流 vs 真鉴权失败）
+
+### v1.2.4（2026-05-04）
+
+**8 项稳定性修复**
+
+- 历史按用户 tz 分组（之前混用 UTC，跨时区双方按日聚合错位）
+- streak 跨 tz 计算（连续天数在用户夜里跨日时不再丢一天）
+- snap 上传 race（同一秒两次上传 atomic rename 抢占 → 改为 DB pre-check + tmp 文件唯一名）
+- scheduler 并发推送（`Promise.allSettled` 替代串行 await，单个慢 token 不再卡掉整波广播）
+- 删冗余轮询（HistoryScreen + App.tsx 两份 10s poll，合并为单 socket 驱动）
+- API 超时（默认 30s 超时 + AbortController，挂机进程不会无限 pending）
+- 401 主动续期（access token 过期请求触发一次 refresh 再重发，避免对用户表现为"一直转圈"）
+- 上传 catch 兜底（multer 抛异常时返回 400 而不是 unhandled crash）
+
+### v1.2.3（2026-05-04）
+
+- **快照反窥探**：对方拍了今天的快照、自己还没拍时，服务端不返回对方的照片 URL（避免"先看对方再决定自己拍什么"）
+- **新表情**：`praise_you`（蒸蚌）+ 天气分类 5 个（晴 / 多云 / 雨 / 雷 / 雪）+ `haha`（嘻嘻）+ `sad`（难过）
+
+### v1.2.2（2026-05-03）
+
+**7 项屏幕响应式适配**：爱心心跳尺寸 / 触摸圆环半径 / 写信 pill 宽度 / 卡片高度 / 信纸字号上限 / iPad 信件最大宽度 / 顶部状态条间距，从 iPhone SE 到 iPad mini 全覆盖。
+
+### v1.2.1（2026-05-03）
+
+- 时区一致性（每日刷新点 / 收件箱「写于」「收于」/ 早晚安同日合算 / 跨 tz 校验）
+- 邮戳精度（双时区按各自 tz 分别格式化）
+- 标题渐变贴边（每日 / 信箱 / 约定 / 数据顶部渐隐贴住屏幕边）
+- 早晚安同日规则测试
+
+### v1.2.0（2026-05-03）
+
+**pair_id 关系实体 + 90 天数据 TTL**
+
+- 新增 `couples` 表，每段「关系」抽象为稳定 10 字符 `pair_id`（`user_a_id < user_b_id` lex 排序保证唯一）
+- 所有 couple-scoped 数据（`actions / mailbox / time_capsules / sticky_notes / important_dates / daily_answers / rituals / inbox_actions`）打 `pair_id` 标签
+- 解绑写 `ended_at` 进入 90 天 grace 期，期间重绑同一对人 → `ended_at` 清空，**全套数据自动复活**；中间换过别的对象再换回来不会读到错误关系的旧数据
+- TTL 调度器 03:00 UTC 每日扫一次过期 couple，按 pair_id 级联硬删
+- pair / unpair 整体事务化 + backfill 脚本一次性 migrate 历史数据 + 6 个新测试
+
+### v1.1.8（2026-05-03）
+
+**信箱大改造**
+
+- 次日达单场可多发（不再「一场一封」）
+- 写信成功 toast + 信箱 tab 红点直接点亮 + 发件箱排序倒置
+- 新增 OutboxScreen 上下滑动浏览未送达；废掉曾试过的右划撤回（手势冲突 + 用户预期不一致）
+- 时区一致性 + 每日刷新加日期去秒 + 快照评价加标签 + 快照反应内联
+
+### v1.1.6（2026-05-01）
+
+- 跟帖后不再自动续开编辑器（写完一条对方再开会被强制再写一条的反人性）
+- 空草稿不持久化到服务端 temp（避免脏数据残留）
+- 单条跟帖可独立撕（之前必须撕整张 sticky）
+
+### v1.1.5（2026-04-30）
 
 **安全 / 竞态打磨**
 
@@ -250,22 +335,22 @@ PoopHub/
 │   ├── app.config.ts                  # Expo + EAS 配置
 │   ├── eas.json                       # EAS Build profile
 │   ├── src/
-│   │   ├── screens/                   # Home / History / Us / Mailbox / WriteLetter / Inbox / Trash / StickyWall / AnniversaryWish / Settings / Setup
-│   │   ├── components/                # MailboxCard / TimeCapsuleCard / BucketListCard / SealAnimation / EnvelopeOpenAnimation / IslandToast / SpringPressable / StickyNote / FireworksOverlay / ...
-│   │   ├── services/                  # api / socket / notification
-│   │   ├── utils/                     # storage / countdown / postmark / inboxUnread / toolbarSlot
+│   │   ├── screens/                   # Home / History / Us / Mailbox / WriteLetter / Inbox / Outbox / Trash / StickyWall / AnniversaryWish / Settings / Setup
+│   │   ├── components/                # MailboxCard / TimeCapsuleCard / BucketListCard / SealAnimation / EnvelopeOpenAnimation / IslandToast / SpringPressable / StickyNote / FireworksOverlay / DeviceListCard / WeeklyReportCard / StatsCard / ...
+│   │   ├── services/                  # api（含 sessions / sync / outbox 接口）/ socket / notification
+│   │   ├── utils/                     # storage / countdown / postmark / inboxUnread / toolbarSlot / outboxFresh
 │   │   └── constants.ts               # 颜色 / 表情配置
-│   └── targets/widget/                # iOS WidgetKit Swift（v1.2 接通）
+│   └── targets/widget/                # iOS WidgetKit Swift（v1.3 接通）
 │
 └── couple-buzz-server/
     ├── src/
     │   ├── index.ts                   # Express 入口 + 中间件 + 限流
-    │   ├── routes.ts                  # REST API（含 sticky-wall 11 个接口 + inbox trash/restore/purge）
+    │   ├── routes.ts                  # REST API（含 sticky-wall 11 个接口 + inbox trash/restore/purge + sessions 三件套 + sync 三组游标 + outbox + letter-draft）
     │   ├── socket.ts                  # WebSocket touch / presence（多设备 Set + 重连快照 + 5/1s 限速 + stale-closure guard）
-    │   ├── auth.ts                    # JWT / scrypt / HMAC 图片签名 / refresh 并发锁 + 事务轮换
-    │   ├── db.ts                      # SQLite schema + 全部 SQL 操作（sticky_notes / sticky_blocks / sticky_seen / inbox_actions / time_capsules.notified_at）
-    │   ├── push.ts                    # APNs + 推送模板（payload 包 body）
-    │   ├── scheduler.ts               # 信箱 / 胶囊解锁 / 周报定时（capsule 解锁 dedup key）
+    │   ├── auth.ts                    # JWT / scrypt / HMAC 图片签名 / refresh 并发锁 + 事务轮换 + per-session 元数据 + isSessionActive
+    │   ├── db.ts                      # SQLite schema + 全部 SQL 操作（couples / device_tokens / sticky_* / inbox_actions / time_capsules.notified_at / users.{daily,inbox,outbox,letter}_seen / refresh_tokens.session_id+device_*+is_primary+revoked）
+    │   ├── push.ts                    # APNs + 推送模板（payload 包 body + badge 全覆盖兜底 + 多设备 fan-out + 410 自动 evict）
+    │   ├── scheduler.ts               # 信箱 reveal / 胶囊解锁 / 周报 / couple TTL 03:00 硬删（capsule 解锁 dedup key）
     │   └── questions.ts               # 1000+ 每日问答题库
     ├── docs/BACKUP.md                 # GPG 加密备份完整运维指南
     ├── scripts/backup.sh              # GPG 加密备份脚本
@@ -305,7 +390,7 @@ npm run ios                 # 或 npm start 扫码
 ```bash
 cd couple-buzz-server
 JWT_SECRET=test-secret npm test
-# 95 passed
+# 130 passed
 ```
 
 ---
@@ -353,7 +438,27 @@ OTA 推送后手机端**冷启动两次**生效。
 
 ## Roadmap
 
-### v1.1.5（2026-04-30，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.1.5)）
+### v1.2.6（2026-05-07，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.6)）
+- [x] **APNs badge 全推送覆盖** — `pushToUser` 兜底真实未读数（floor=1），scheduler 广播也走同一管道，~25 种推送类型桌面图标都会变红圈
+
+### v1.2.5（2026-05-06）
+- [x] **多设备会话管理** — DeviceListCard / 主设备制 / 强制下线 / `isSessionActive` 即时生效
+- [x] **多设备 APNs 推送** — `device_tokens` 表替代单值，pushToUser fan-out 全设备
+- [x] **跨端状态全部上服务端** — daily_seen / inbox_seen / outbox_seen / letter_draft 全部服务端字段，only-advance SQL 守卫
+- [x] **上传可靠性** — 401 主动续期 + 超时 catch 兜底 + 429 不再误判登出
+
+### v1.2.0 — v1.2.4（2026-05-03 — 05-04）
+- [x] **pair_id 关系实体 + 90 天数据 TTL + 重绑数据复活**（v1.2.0）
+- [x] **8 项稳定性修复** — 历史按用户 tz 分组 / streak 跨 tz / snap 上传 race / scheduler 并发推送 / 删冗余轮询 / API 超时（v1.2.4）
+- [x] **快照反窥探 + 蒸蚌/天气分类/嘻嘻/难过 表情**（v1.2.3）
+- [x] **7 项屏幕响应式适配**（v1.2.2）
+- [x] **时区一致性 / 邮戳精度 / 标题渐变贴边 / 早晚安同日规则**（v1.2.1）
+
+### v1.1.6 — v1.1.8（2026-05-01 — 05-03）
+- [x] **跟帖 3 处修复** — 不再自动续开 / 空草稿不持久化 / 单条可撕（v1.1.6）
+- [x] **信箱大改造** — 次日达多发 / OutboxScreen 上下滑 / 写信成功 toast / tab 红点直点 / 时区 / 快照评价加标签（v1.1.8）
+
+### v1.1.5（2026-04-30）
 - [x] **9 项安全 / 竞态打磨**：socket touch 限速 / 客户端死循环熔断 / capsule 索引 + `notified_at` 持久 dedup / refresh token 事务化轮换 / presence 防闪 / 跟帖 vs 撕贴竞态 / AppState 定时器 cleanup / presence stale-closure guard / 写信草稿覆盖 sealing 阶段
 
 ### v1.1.0 — v1.1.4（2026-04-30）
@@ -384,7 +489,7 @@ OTA 推送后手机端**冷启动两次**生效。
 ### v1.0.0（2026-04-27）
 - [x] MVP：5 tab 结构、双场信箱、couple ID、APNs 推送、JWT 双 token、95 接口测试
 
-### v1.2 计划
+### v1.3 计划
 - [ ] iOS Widget：接通数据写入 App Group UserDefaults（结构已搭好，差 native bridge）
 - [ ] 备份失败主动告警（cron 失败邮件 / pushover 通知）
 - [ ] 异地备份多云冗余（自动 sync 到 Google Drive / Dropbox）
