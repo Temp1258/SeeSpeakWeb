@@ -659,6 +659,59 @@ describe('Sessions / multi-device login', () => {
     expect(after.body.sessions.filter((s: { is_primary: boolean }) => s.is_primary)).toHaveLength(1);
   });
 
+  it('group revoke wipes every session sharing the device fingerprint', async () => {
+    // Regression: the device list dedups rows by (device_name,
+    // device_os) and "log out this device" must drop every refresh-
+    // token row the device left behind across reinstalls. Doing it as
+    // a parallel client-side fan-out raced the auth middleware (own
+    // row revoked first → sibling DELETEs 401), leaving leftover
+    // sessions that re-surfaced as "another device" after re-login.
+    const { app } = createTestApp();
+    const alice = await registerUser(app, 'Alice');
+
+    const sameDevice = { name: 'Steve 的 iPhone', os: 'iOS 17.2' };
+    const second = await request(app)
+      .post('/api/login')
+      .send({ user_id: alice.user_id, password: 'test1234', device: sameDevice });
+    const third = await request(app)
+      .post('/api/login')
+      .send({ user_id: alice.user_id, password: 'test1234', device: sameDevice });
+
+    const before = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(before.body.sessions).toHaveLength(3);
+
+    // Self-revoke from third's perspective — drops both 'Steve 的 iPhone'
+    // sessions in one transaction.
+    const myList = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${third.body.access_token}`);
+    const mySid = myList.body.sessions.find((s: { is_current: boolean }) => s.is_current).session_id;
+
+    const kick = await request(app)
+      .delete(`/api/sessions/${mySid}/group`)
+      .set('Authorization', `Bearer ${third.body.access_token}`);
+    expect(kick.status).toBe(200);
+    expect(kick.body.revoked_count).toBe(2);
+
+    // Alice's original session (no device info → different fingerprint)
+    // survives. Both 'Steve 的 iPhone' sessions are gone.
+    const after = await request(app)
+      .get('/api/sessions')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(after.body.sessions).toHaveLength(1);
+    expect(after.body.sessions[0].device_name).toBe(null);
+
+    // The sibling session (second device) we never explicitly targeted
+    // must also fail auth — that's the whole point of group revoke.
+    const probe = await request(app)
+      .get('/api/status')
+      .set('Authorization', `Bearer ${second.body.access_token}`);
+    expect(probe.status).toBe(401);
+    expect(probe.body.code).toBe('session_revoked');
+  });
+
   it('refresh preserves session_id (rotation does NOT spawn ghost sessions)', async () => {
     const { app } = createTestApp();
     const alice = await registerUser(app, 'Alice');

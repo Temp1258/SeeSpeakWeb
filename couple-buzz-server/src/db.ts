@@ -385,6 +385,12 @@ export interface DbOps {
   // returns whether it succeeded (false → session not found / already
   // revoked).
   revokeSession(sessionId: string): boolean;
+  // Atomically revoke every still-active session of this user whose
+  // (device_name, device_os) matches the target session's, drop their
+  // device_tokens, and return the revoked session_ids so callers can
+  // disconnect their sockets. Returns [] if the target doesn't exist
+  // or doesn't belong to the user.
+  revokeSessionGroup(userId: string, sessionId: string): string[];
   // Rename every active session of this user whose (device_name,
   // device_os) matches the target session's — keeps the dedup group
   // displayed in the app coherent.
@@ -1789,6 +1795,28 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       AND superseded_at IS NULL
       AND revoked = 0
   `);
+  // Same fingerprint-based group select / revoke pair used by the
+  // group-revoke endpoint. Doing it server-side in one transaction is
+  // load-bearing: the client used to fan out parallel DELETEs, but as
+  // soon as our own row went revoked=1 the auth middleware on the
+  // sibling DELETEs returned 401, leaving the rest of the group active
+  // and reappearing in the device list after re-login.
+  const stmtSelectGroupSessionIds = db.prepare(`
+    SELECT session_id FROM refresh_tokens
+    WHERE user_id = ?
+      AND device_name IS ?
+      AND device_os IS ?
+      AND superseded_at IS NULL
+      AND revoked = 0
+  `);
+  const stmtRevokeGroupSessions = db.prepare(`
+    UPDATE refresh_tokens SET revoked = 1
+    WHERE user_id = ?
+      AND device_name IS ?
+      AND device_os IS ?
+      AND superseded_at IS NULL
+      AND revoked = 0
+  `);
 
   // Streak day boundary aligns with the BJT 7am session boundary used by
   // daily-question / daily-snap (UTC 23h = BJT 7am). Without the +1h shift,
@@ -2594,6 +2622,25 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
         stmtDeleteDeviceTokensBySession.run(sessionId);
       })();
       return changed > 0;
+    },
+
+    revokeSessionGroup(userId, sessionId): string[] {
+      const target = stmtGetSession.get(sessionId) as RefreshToken | undefined;
+      if (!target || target.user_id !== userId) return [];
+      let revokedSids: string[] = [];
+      db.transaction(() => {
+        const rows = stmtSelectGroupSessionIds.all(
+          userId,
+          target.device_name,
+          target.device_os,
+        ) as Array<{ session_id: string }>;
+        revokedSids = rows.map((r) => r.session_id);
+        stmtRevokeGroupSessions.run(userId, target.device_name, target.device_os);
+        for (const sid of revokedSids) {
+          stmtDeleteDeviceTokensBySession.run(sid);
+        }
+      })();
+      return revokedSids;
     },
 
     renameSessionGroup(userId, sessionId, newName): boolean {

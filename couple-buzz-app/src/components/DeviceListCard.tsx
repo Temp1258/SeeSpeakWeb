@@ -60,25 +60,30 @@ const DeviceListCard = forwardRef<Reloadable, Props>(({ onSelfRevoked }, ref) =>
   const revoke = useCallback(async (g: DeviceGroup) => {
     setBusy(g.key);
     try {
-      // Revoke every session backing this device row in parallel. If the
-      // group contains the current session, our own session will be one
-      // of those revokes — server has already kicked us by the time the
-      // promise settles, so we fast-path to SetupScreen instead of
-      // waiting for the next API call to bounce.
-      const results = await Promise.allSettled(
-        g.members.map((m) => api.revokeSession(m.session_id))
-      );
+      // Single server-side fan-out: the endpoint atomically revokes
+      // every session in the group inside one transaction. Done this
+      // way (not parallel client-side DELETEs) because revoking our
+      // own row kills the access token, which would 401 every other
+      // in-flight DELETE — leaving renamed-but-not-revoked siblings
+      // that resurface as "another device" in the list after re-login.
+      await api.revokeSessionGroup(g.representative.session_id);
       if (g.is_current) {
         await storage.clearAll();
         onSelfRevoked();
         return;
       }
-      const failure = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
-      if (failure) {
-        const reason: any = failure.reason;
-        Alert.alert('', reason?.message || '部分会话下线失败');
-      }
       await load();
+    } catch (e: any) {
+      if (g.is_current) {
+        // Network blew up mid-flight; the server may or may not have
+        // committed the revoke. Either way our local tokens are about
+        // to be useless — clear and bounce to SetupScreen rather than
+        // loop on a half-dead session.
+        await storage.clearAll();
+        onSelfRevoked();
+        return;
+      }
+      Alert.alert('', e?.message || '操作失败');
     } finally {
       setBusy(null);
     }

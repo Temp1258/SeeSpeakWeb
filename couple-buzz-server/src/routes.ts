@@ -2488,6 +2488,42 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true });
   });
 
+  // DELETE /api/sessions/:sid/group — force-logout every still-active
+  // session of this user that shares the target's (device_name,
+  // device_os). Mirrors the dedup grouping the device list does in the
+  // app, so "log out this device" wipes every refresh-token row that
+  // device left behind across reinstalls. Doing it server-side in a
+  // single transaction is required: the previous client-side fan-out
+  // raced the auth middleware (own session got revoked first → all
+  // sibling DELETEs 401'd → leftover sessions reappeared in the list
+  // after re-login under the renamed label).
+  router.delete('/sessions/:sid/group', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const sid = String(req.params.sid);
+    const target = dbOps.getActiveSessionForUser(userId, sid);
+    if (!target) return res.status(404).json({ error: 'Session not found' });
+
+    const isSelf = sid === req.sessionId;
+    if (!isSelf) {
+      const me = req.sessionId ? dbOps.getActiveSessionForUser(userId, req.sessionId) : undefined;
+      if (!me || me.is_primary !== 1) {
+        return res.status(403).json({ error: 'Only the primary device can sign out other devices' });
+      }
+    }
+
+    const revokedSids = dbOps.revokeSessionGroup(userId, sid);
+    for (const r of revokedSids) {
+      disconnectSession(r);
+    }
+    // If the user just nuked their own primary (directly or because a
+    // sibling row in the group held primary), pick a fallback primary
+    // so the device list always has someone with kick rights.
+    if (isSelf || target.is_primary === 1) {
+      dbOps.promoteFallbackPrimary(userId);
+    }
+    res.json({ success: true, revoked_count: revokedSids.length });
+  });
+
   // DELETE /api/sessions/:sid — force-logout the named session.
   // Self-revoke always allowed; revoking a different session requires
   // the requester to be primary.

@@ -848,6 +848,13 @@ export const api = {
   revokeSession(sessionId: string): Promise<{ success: boolean }> {
     return request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
   },
+  // Atomic group revoke — drops every session sharing the target's
+  // (device_name, device_os). Required because parallel single-session
+  // DELETEs race the auth middleware: revoking our own row first kills
+  // sibling DELETEs with 401, leaving the rest of the group active.
+  revokeSessionGroup(sessionId: string): Promise<{ success: boolean; revoked_count: number }> {
+    return request(`/api/sessions/${encodeURIComponent(sessionId)}/group`, { method: 'DELETE' });
+  },
   // Rename the device label. Server propagates to every active session
   // sharing the same (device_name, device_os) so the dedup grouping in
   // DeviceListCard stays one row per physical device after the edit.
