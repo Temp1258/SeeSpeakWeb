@@ -2,8 +2,8 @@
 
 > 一款专为情侣两人设计的亲密互动 App。把日常的小事攒成关系里的仪式感。
 
-[![Release](https://img.shields.io/badge/release-v1.2.7-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.7)
-[![Tests](https://img.shields.io/badge/tests-130%20passing-success)](./couple-buzz-server)
+[![Release](https://img.shields.io/badge/release-v1.2.12-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.12)
+[![Tests](https://img.shields.io/badge/tests-137%20passing-success)](./couple-buzz-server)
 [![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-iOS-lightgrey)]()
 [![Stack](https://img.shields.io/badge/stack-RN%20%2B%20Expo%20%2B%20Node-brightgreen)]()
@@ -48,18 +48,18 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 > **v1.1 重构**：原本平铺的 MailboxCard / TimeCapsuleCard 全部下沉，主屏只剩**三张入口卡 + 底部「写信 ✉️」灵动岛 pill**。点入口卡以全屏 `pageSheet` 模态弹出对应子界面。这套结构让信箱真正像一个「桌子」：写信入口永远停在底部、收件 / 整理 / 留言三件事各回各家。
 
 主屏入口（自带未读 🚩 红旗）：
-- 📬 **收件箱** — 已送达的次日达 + 已开启的择日达
+- 📬 **收件箱** — 已送达的半日达 + 已开启的择日达
 - 🗑️ **废件箱** — 从收件箱删除的信件可以在这里恢复（v1.1 前叫「垃圾篓」）
 - 📝 **小贴吧** — 双方共享的便利贴墙（v1.1 新增）
 
-底部固定的 ✉️ pill 进入**统一写信流程**（次日达 / 择日达分支由封信后选择）。底部还有 📤 **发件箱**入口（OutboxScreen），列出自己已寄出但还没送达的次日达 / 择日达，按上下滑动浏览，已送达自动从列表里消失；新寄出的灵动岛 toast + 信箱 tab 红点立刻点亮，无需等推送回环。
+底部固定的 ✉️ pill 进入**统一写信流程**（半日达 / 择日达分支由封信后选择）。底部还有 📤 **发件箱**入口（OutboxScreen），列出自己已寄出但还没送达的半日达 / 择日达，按上下滑动浏览，已送达自动从列表里消失；新寄出的灵动岛 toast + 信箱 tab 红点立刻点亮，无需等推送回环。
 
 #### ✉️ 统一写信流程（WriteLetterScreen）
 **5 个阶段**：`write → sealing → kind → capsuleDetails → sending`
 
 - **写**：奶油色信纸（`#FAF6E8`）+ 棕墨字（`#3D2A19`）；正式信件版式：**致 [对方/自己] · 正文 · 落款 [自己] · 字数计数**；iOS 键盘上方 inline accessory 「完成」按钮一键收键盘；草稿 400ms debounce 自动落 AsyncStorage，关掉重开还在
 - **封**：SealAnimation（信纸 → 信封 → 火漆印）~1.3s，作者本人也看不到自己写的内容（`my_sealed` 服务端标志，writing/sealing 阶段不返回 my_message；客户端草稿 setter 在 sealing 之后失活，避免 stale closure 把 sealing 阶段的 UI 草稿写入）
-- **选**：📮 次日达（500 字上限）/ 💌 择日达（1000 字上限），二选一卡片；次日达**单场可多发**（同一窗口写多少封都行，到点一起送达），不再是「一场一封」的限制
+- **选**：📮 半日达（500 字上限）/ 💌 择日达（1000 字上限），二选一卡片；半日达**单场可多发**（同一窗口写多少封都行，到点一起送达），不再是「一场一封」的限制
 - **择日达详情**：年/月/日 + 时/分**五段下拉选择器**（不再是日历点击，6 年窗口，月日联动 clamp）；**双时区即时预览**——同时显示「我（北京时间）：04-27 20:34」与「ta 那边收到时：04-28 04:34」，让对方拿到的也是整点钟整分；可见性切换 🪞 给自己 / 💕 给对方
 - **寄**：信件缩小 + 微微旋转 + 沿 Y 轴落入信箱图标（~520ms）+ 信箱小弹跳（~180ms），左右随机偏置增加变化
 
@@ -191,7 +191,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 | 跨端状态同步 | daily_seen / inbox_seen / outbox_seen / letter_draft 全部上 server 字段，only-advance SQL 守卫拒绝旧客户端 roll back 已读游标 |
 | 快照反窥探 | 对方拍照后自己未拍时不下发其照片 URL，避免「先看对方再决定自己拍什么」的偷看；`daily_snaps` 接口按对称性裁掉敏感字段 |
 | 时间胶囊 | self 可见性服务端校验（防 partner 猜 id 越权读取） |
-| 次日达内容封存 | writing/sealing 阶段服务端不返回作者自己的 my_message，加 my_sealed 标志；客户端草稿 setter 在 sealing 后失活，避免 stale closure 把 UI 草稿覆写 sealed 内容 |
+| 半日达内容封存 | writing/sealing 阶段服务端不返回作者自己的 my_message，加 my_sealed 标志；客户端草稿 setter 在 sealing 后失活，避免 stale closure 把 UI 草稿覆写 sealed 内容 |
 | Inbox 软删除 | inbox_actions 表 per-recipient 状态机（trashed / purged）；archive、capsules、open endpoint 三处统一拦截 |
 | Purge 防绕过 | 彻底删除后即使直接调 POST /capsules/:id/open 也返 404，杜绝从历史 id 拿回内容 |
 | 推送隐私 | scheduler 不给 self-vis 胶囊推送 partner，防止泄露用户私密信件存在 |
@@ -200,7 +200,16 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 | Presence 残留 | disconnect 1.5s grace + stale-closure guard（旧 closure 通过身份 token 比对识别已被新 session 覆盖）+ on-connect 给孤身 socket 补 `presence_single` |
 | 数据备份 | GPG 公钥加密（AES-256），私钥离线 U 盘 + 密码管理器 passphrase |
 
-### v1.2.6（2026-05-07，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.6)）
+### v1.2.12（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.12)）
+
+**「半日达」更名 + 信箱底部下次送达预告**
+
+- 全仓库 `次日达` → `半日达`：4 个 APNs 推送模板（`mailbox_open / mailbox_written / mailbox_countdown_15min / mailbox_reveal`）+ App 全部 UI 文案（写信选项卡 / 收件箱空态 / 废件箱 / 发件箱 / Mailbox 入口卡两条副标题 / 字数超限 Alert / 老 MailboxCard 标题与列表 chip）+ README 描述文 + 内部注释，无遗漏
+- 信箱页 `写信 ✉️` pill 下方新增小字「下个半日达将于 北京时间 05-10 20:00 寄达」，与每日页「下次更新于 ...」同款 typography（fontSize 12 / `COLORS.textLight` / 居中），按 Settings 里设置的 tz 渲染
+- 新增 `useNextHalfDayRevealAt()` countdown hook：对齐到下一个 0:00 / 12:00 UTC 边界（半日达 reveal 节奏），minute-tick 重渲染；和 `useNextDailyRefreshAt` 共用同一思路
+- 137 个接口测试全过（之前 README 标 130，已同步徽章）
+
+### v1.2.6（2026-05-07）
 
 **APNs badge 全推送覆盖**
 
@@ -261,7 +270,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 
 **信箱大改造**
 
-- 次日达单场可多发（不再「一场一封」）
+- 半日达单场可多发（不再「一场一封」）
 - 写信成功 toast + 信箱 tab 红点直接点亮 + 发件箱排序倒置
 - 新增 OutboxScreen 上下滑动浏览未送达；废掉曾试过的右划撤回（手势冲突 + 用户预期不一致）
 - 时区一致性 + 每日刷新加日期去秒 + 快照评价加标签 + 快照反应内联
@@ -438,7 +447,11 @@ OTA 推送后手机端**冷启动两次**生效。
 
 ## Roadmap
 
-### v1.2.6（2026-05-07，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.6)）
+### v1.2.12（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.12)）
+- [x] **「半日达」更名** — 全仓库 26 处 `次日达` → `半日达`（4 个推送模板 + App 全部 UI 文案 + README + 注释）
+- [x] **信箱底部下次送达预告** — 写信 pill 下方"下个半日达将于 ... 寄达"，按用户 tz 渲染，对齐 0:00 / 12:00 UTC 边界
+
+### v1.2.6（2026-05-07）
 - [x] **APNs badge 全推送覆盖** — `pushToUser` 兜底真实未读数（floor=1），scheduler 广播也走同一管道，~25 种推送类型桌面图标都会变红圈
 
 ### v1.2.5（2026-05-06）
@@ -456,7 +469,7 @@ OTA 推送后手机端**冷启动两次**生效。
 
 ### v1.1.6 — v1.1.8（2026-05-01 — 05-03）
 - [x] **跟帖 3 处修复** — 不再自动续开 / 空草稿不持久化 / 单条可撕（v1.1.6）
-- [x] **信箱大改造** — 次日达多发 / OutboxScreen 上下滑 / 写信成功 toast / tab 红点直点 / 时区 / 快照评价加标签（v1.1.8）
+- [x] **信箱大改造** — 半日达多发 / OutboxScreen 上下滑 / 写信成功 toast / tab 红点直点 / 时区 / 快照评价加标签（v1.1.8）
 
 ### v1.1.5（2026-04-30）
 - [x] **9 项安全 / 竞态打磨**：socket touch 限速 / 客户端死循环熔断 / capsule 索引 + `notified_at` 持久 dedup / refresh token 事务化轮换 / presence 防闪 / 跟帖 vs 撕贴竞态 / AppState 定时器 cleanup / presence stale-closure guard / 写信草稿覆盖 sealing 阶段
@@ -480,7 +493,7 @@ OTA 推送后手机端**冷启动两次**生效。
 - [x] 7 个真实漏洞修复 + 95 接口测试
 
 ### v1.0.1（2026-04-28）
-- [x] 信箱模块重命名：树洞信箱 → 次日达、时间胶囊 → 择日达
+- [x] 信箱模块重命名：树洞信箱 → 半日达、时间胶囊 → 择日达
 - [x] 写完后双方都看不到信件内容直到送达 + 封信 / 开信过场动画
 - [x] 第 6 个 tab「🎀 约定」：纪念日 + 心愿清单合并管理
 - [x] 收件箱（Apple Wallet 风格）+ 垃圾篓

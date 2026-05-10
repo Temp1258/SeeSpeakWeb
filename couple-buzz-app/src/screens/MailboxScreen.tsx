@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { View, ScrollView, Text, TouchableOpacity, StyleSheet, RefreshControl, Animated, AppState as RNAppState, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -15,6 +15,8 @@ import { subscribe } from '../services/socket';
 import { storage } from '../utils/storage';
 import { subscribeOutboxChanged } from '../utils/outboxEvents';
 import { SpringPressable } from '../components/SpringPressable';
+import { useNextHalfDayRevealAt } from '../utils/countdown';
+import { formatPostmark } from '../utils/postmark';
 
 export default function MailboxScreen() {
   const insets = useSafeAreaInsets();
@@ -37,10 +39,20 @@ export default function MailboxScreen() {
   const [outboxHasFresh, setOutboxHasFresh] = useState(false);
   const [stickyHasUnread, setStickyHasUnread] = useState(false);
   const [partnerName, setPartnerName] = useState<string>('');
+  const [myTz, setMyTz] = useState('Asia/Shanghai');
   const inboxRef = useRef<InboxHandle>(null);
   const outboxRef = useRef<OutboxHandle>(null);
   const trashRef = useRef<TrashHandle>(null);
   const stickyRef = useRef<StickyWallHandle>(null);
+
+  // Next 半日达 delivery boundary (8am / 8pm BJT, one every 12h) rendered
+  // in the user's preferred tz — same shape as the daily refresh hint on
+  // the 每日 tab so the visual language stays consistent across screens.
+  const nextRevealAt = useNextHalfDayRevealAt();
+  const revealStamp = useMemo(() => {
+    try { return formatPostmark(new Date(nextRevealAt).toISOString(), myTz); }
+    catch { return ''; }
+  }, [nextRevealAt, myTz]);
 
   const refreshUnreadFlag = useCallback(async () => {
     const [inbox, outbox] = await Promise.all([
@@ -72,6 +84,9 @@ export default function MailboxScreen() {
       refreshStickyFlag({ autoOpenIfTemp: true });
       // Pull cached partner name for the 写信 → 择日达 → "给对方" label.
       storage.getPartnerName().then(n => { if (n) setPartnerName(n); }).catch(() => {});
+      // Re-fetch tz on every focus so a Settings tz change is picked up
+      // the next time the user navigates back — same pattern as DailyScreen.
+      storage.getTimezone().then(tz => { if (tz) setMyTz(tz); }).catch(() => {});
     }, [refreshUnreadFlag, refreshStickyFlag])
   );
 
@@ -151,7 +166,7 @@ export default function MailboxScreen() {
           <Text style={styles.entryEmoji}>📬</Text>
           <View style={{ flex: 1 }}>
             <Text style={styles.entryTitle}>收件箱</Text>
-            <Text style={styles.entrySub}>已送达的次日达 · 已开启的择日达</Text>
+            <Text style={styles.entrySub}>已送达的半日达 · 已开启的择日达</Text>
           </View>
           {inboxHasUnread && <Text style={styles.unreadFlag}>🚩</Text>}
           <Text style={styles.entryArrow}>›</Text>
@@ -165,7 +180,7 @@ export default function MailboxScreen() {
           <Text style={styles.entryEmoji}>📤</Text>
           <View style={{ flex: 1 }}>
             <Text style={styles.entryTitle}>发件箱</Text>
-            <Text style={styles.entrySub}>在途的次日达 · 待解锁的择日达</Text>
+            <Text style={styles.entrySub}>在途的半日达 · 待解锁的择日达</Text>
           </View>
           {outboxHasFresh && <Text style={styles.unreadFlag}>🚩</Text>}
           <Text style={styles.entryArrow}>›</Text>
@@ -220,7 +235,7 @@ export default function MailboxScreen() {
       {/* 写信 floating pill — anchored at the bottom of the screen, just above
           the home indicator + tab bar. Replaces the old MailboxCard +
           TimeCapsuleCard cards inline; tapping it opens the unified
-          letter-writing flow that branches to 次日达 / 择日达 after sealing. */}
+          letter-writing flow that branches to 半日达 / 择日达 after sealing. */}
       <View style={[styles.writePillSlot, { bottom: writePillBottom }]} pointerEvents="box-none">
         <SpringPressable
           onPress={() => setWriteOpen(true)}
@@ -229,6 +244,9 @@ export default function MailboxScreen() {
         >
           <Text style={styles.writePillText}>写信 ✉️</Text>
         </SpringPressable>
+        {revealStamp ? (
+          <Text style={styles.writeHint}>下个半日达将于 {revealStamp} 寄达</Text>
+        ) : null}
       </View>
 
       <InboxScreen
@@ -345,5 +363,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     letterSpacing: 0.5,
+  },
+  writeHint: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    marginTop: 8,
   },
 });

@@ -1314,7 +1314,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   }
 
   // Migration: drop UNIQUE(user_id, week_key) on mailbox so the user can
-  // ship multiple 次日达 within the same session (the original "one letter
+  // ship multiple 半日达 within the same session (the original "one letter
   // per session" cap surfaced as "本场的信已封存，不能再修改"). The reveal
   // cadence still groups by session_key — every letter written in the
   // current session opens at the next session boundary on the recipient

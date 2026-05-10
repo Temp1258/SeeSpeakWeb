@@ -147,7 +147,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           from: ta,
           to: me,
           body: w.partner_content,
-          kindLabel: '次日达 · 来自 ta',
+          kindLabel: '半日达 · 来自 ta',
           accent: MAILBOX_ACCENT,
         });
       }
@@ -340,7 +340,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
             <View style={styles.centered}>
               <Text style={styles.emptyEmoji}>💌</Text>
               <Text style={styles.emptyTitle}>还没有收到信</Text>
-              <Text style={styles.emptySub}>已送达的次日达和已开启的择日达都会出现在这里</Text>
+              <Text style={styles.emptySub}>已送达的半日达和已开启的择日达都会出现在这里</Text>
             </View>
           ) : (
             // Render unconditionally — gating on listHeight > 0 stalled the

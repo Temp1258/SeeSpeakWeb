@@ -75,3 +75,23 @@ export function useNextDailyRefreshAt(): number {
   if (nextMid <= shifted) nextMid += DAY_MS;
   return nextMid - BJT_7AM_SHIFT_MS;
 }
+
+// Absolute UTC ms of the next 半日达 reveal — server reveals at UTC 0:00
+// and 12:00 daily (= 8am / 8pm BJT), one boundary every 12h. A letter
+// written *now* will be delivered at the next such boundary; this hook
+// gives the floating "下个半日达将于 ... 寄达" hint a real wall-clock
+// target rendered in the user's tz. Same minute-tick cadence as
+// useNextDailyRefreshAt — the boundary moves at most once an hour, so
+// per-second ticks would be wasted re-renders.
+const HALF_DAY_MS = 12 * 3600 * 1000;
+export function useNextHalfDayRevealAt(): number {
+  const [tickMs, setTickMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setTickMs(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  let next = Math.ceil(tickMs / HALF_DAY_MS) * HALF_DAY_MS;
+  if (next <= tickMs) next += HALF_DAY_MS;
+  return next;
+}

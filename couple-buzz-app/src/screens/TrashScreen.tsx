@@ -62,7 +62,7 @@ const TrashScreen = forwardRef<TrashHandle, Props>(({ visible, onClose, onAfterR
             ...it,
             fromName: ta,
             toName: me,
-            kindLabel: '次日达 · 来自 ta',
+            kindLabel: '半日达 · 来自 ta',
             accent: MAILBOX_ACCENT,
           };
         }

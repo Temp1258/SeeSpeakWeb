@@ -103,7 +103,7 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
           kind: 'mailbox',
           sortAt: revealIso,
           writtenIso,
-          kindLabel: '次日达 · 寄给 ' + ta,
+          kindLabel: '半日达 · 寄给 ' + ta,
           accent: MAILBOX_ACCENT,
           writtenLine: `写于 ${formatPostmark(writtenIso, myZone)}`,
           arriveLineMine: `送达 ${formatPostmark(revealIso, myZone)}`,
@@ -238,7 +238,7 @@ const OutboxScreen = forwardRef<OutboxHandle, Props>(({ visible, onClose, partne
               <Text style={styles.emptyEmoji}>✉️</Text>
               <Text style={styles.emptyTitle}>没有在途的信件</Text>
               <Text style={styles.emptySub}>
-                次日达和择日达寄出后会在这里展示，{'\n'}送达后自动从这里消失
+                半日达和择日达寄出后会在这里展示，{'\n'}送达后自动从这里消失
               </Text>
             </View>
           ) : (

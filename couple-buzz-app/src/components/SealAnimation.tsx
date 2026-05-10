@@ -11,7 +11,7 @@ interface Props {
 }
 
 // Three-beat seal animation: letter folds away → envelope pops in → stamp drops.
-// Used identically by 次日达 and 择日达 after a successful submit.
+// Used identically by 半日达 and 择日达 after a successful submit.
 export default function SealAnimation({ preview, onComplete }: Props) {
   const letterOpacity = useRef(new Animated.Value(1)).current;
   const letterTranslateY = useRef(new Animated.Value(0)).current;

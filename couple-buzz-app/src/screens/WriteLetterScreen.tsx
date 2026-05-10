@@ -251,10 +251,10 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
 
   const handlePickKind = (kind: 'mailbox' | 'capsule') => {
     // Mailbox is server-capped at 500 chars (capsule at 1000). Catch the
-    // length mismatch in the client so the user doesn't tap 次日达 and
+    // length mismatch in the client so the user doesn't tap 半日达 and
     // bounce off a 400 only after the sealing animation kicks off.
     if (kind === 'mailbox' && content.trim().length > 500) {
-      Alert.alert('', '次日达最多 500 字～\n这封超过了，要不寄择日达？');
+      Alert.alert('', '半日达最多 500 字～\n这封超过了，要不寄择日达？');
       return;
     }
     Haptics.selectionAsync();
@@ -435,7 +435,7 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
             onPress={() => handlePickKind('mailbox')}
           >
             <Text style={styles.kindEmoji}>📮</Text>
-            <Text style={styles.kindTitle}>次日达</Text>
+            <Text style={styles.kindTitle}>半日达</Text>
             <Text style={styles.kindSub}>送到本场或下一场，对方很快收到</Text>
           </TouchableOpacity>
           <TouchableOpacity

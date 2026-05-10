@@ -119,7 +119,7 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
         from: fromPartner ? names.ta : names.me,
         to: fromPartner ? names.me : names.ta,
         date: formatWeekKey(data.week_key),
-        kindLabel: '次日达',
+        kindLabel: '半日达',
         content: text,
       });
     }
@@ -185,7 +185,7 @@ const MailboxCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) =>
 
   return (
     <View style={styles.card}>
-      <Text style={styles.header}>次日达 📮</Text>
+      <Text style={styles.header}>半日达 📮</Text>
       <Text style={styles.schedule}>{scheduleLabel}</Text>
 
       {phase === 'revealed' ? (
