@@ -7,6 +7,15 @@ import { pushToUser, type SendPushFn } from './push';
 const lastTriggered: Record<string, string> = {};
 
 export function startScheduler(dbOps: DbOps, pushFn: SendPushFn): void {
+  // pm2 cluster mode would otherwise spawn N copies of every cron tick
+  // (mailbox reveal pushes, capsule unlocks, weekly report) so users
+  // get duplicated notifications. Set SCHEDULER_DISABLED=1 on all but
+  // one instance when running clustered. No-op for the default single-
+  // process pm2 setup currently used in production.
+  if (process.env.SCHEDULER_DISABLED === '1') {
+    console.log('[Scheduler] disabled by SCHEDULER_DISABLED=1');
+    return;
+  }
   setInterval(async () => {
     const now = new Date();
     const utcDay = now.getUTCDay(); // 0=Sun ... 5=Fri 6=Sat

@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -321,8 +321,8 @@ export function createPublicRouter(dbOps: DbOps): Router {
     if (name.trim().length === 0 || name.trim().length > NAME_MAX) {
       return res.status(400).json({ error: `name must be 1-${NAME_MAX} characters` });
     }
-    if (!password || typeof password !== 'string' || password.length < 4) {
-      return res.status(400).json({ error: 'password is required (min 4 chars)' });
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'password is required (min 6 chars)' });
     }
 
     let userId = generateUserId();
@@ -401,7 +401,7 @@ export function createPublicRouter(dbOps: DbOps): Router {
     // Include `name` so the client can persist the user's own nickname after
     // a fresh login. Without it, storage.getUserName() returns null until the
     // user navigates to Settings and saves — every screen that displays the
-    // user's name (MailboxCard, InboxScreen, TimeCapsuleCard, HistoryScreen)
+    // user's name (InboxScreen, OutboxScreen, HistoryScreen, etc.)
     // would fall back to "我" in the meantime.
     res.json({ user_id: user.id, name: user.name, partner_name: partnerName, access_token, refresh_token });
   });
@@ -525,13 +525,17 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
     if (partner_remark !== undefined) {
       if (typeof partner_remark !== 'string') return res.status(400).json({ error: 'partner_remark must be a string' });
-      if (partner_remark.length > REMARK_MAX) return res.status(400).json({ error: `partner_remark max ${REMARK_MAX} characters` });
+      // Trim for length check + storage so a remark like "    " (whitespace
+      // only) clears the field instead of silently bloating it, and pasted
+      // text with leading/trailing space doesn't push the trimmed visual
+      // content past the visible cap.
+      if (partner_remark.trim().length > REMARK_MAX) return res.status(400).json({ error: `partner_remark max ${REMARK_MAX} characters` });
     }
 
     const newName = (name && typeof name === 'string' && name.trim()) ? name.trim() : user.name;
     const newTimezone = (timezone && typeof timezone === 'string' && isValidTimezone(timezone)) ? timezone : user.timezone;
     const newPartnerTz = (partner_timezone && typeof partner_timezone === 'string' && isValidTimezone(partner_timezone)) ? partner_timezone : user.partner_timezone;
-    const newRemark = (typeof partner_remark === 'string') ? partner_remark : user.partner_remark;
+    const newRemark = (typeof partner_remark === 'string') ? partner_remark.trim() : user.partner_remark;
 
     dbOps.updateProfile(userId, newName, newTimezone, newPartnerTz, newRemark);
     res.json({ success: true, name: newName, timezone: newTimezone, partner_timezone: newPartnerTz, partner_remark: newRemark });
@@ -795,7 +799,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const userId = req.userId!;
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.partner_id) return res.json({ dates: [], nearest: null });
+    if (!user.partner_id) return res.json({ dates: [], pinned: null });
 
     const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
     if (!pairId) return res.json({ dates: [], pinned: null });
@@ -1722,7 +1726,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.json({ success: true, content: capsule.content });
     }
 
-    dbOps.openCapsule(id);
+    // pairId is non-null here — the capsule was just resolved via
+    // getCapsules(pairId) above, which means pairId was set.
+    dbOps.openCapsule(id, pairId!);
     res.json({ success: true, content: capsule.content });
   });
 
@@ -1790,7 +1796,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const item = items.find(i => i.id === id);
     if (!item) return res.status(404).json({ error: 'Item not found' });
 
-    const updated = dbOps.completeBucketItem(id, userId);
+    const updated = dbOps.completeBucketItem(id, userId, pairId);
     if (!updated) return res.status(404).json({ error: 'Item not found' });
 
     if (user.partner_id) {
@@ -1819,7 +1825,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const items = dbOps.getBucketItems(pairId);
     if (!items.some(i => i.id === id)) return res.status(404).json({ error: 'Item not found' });
 
-    const updated = dbOps.uncompleteBucketItem(id);
+    const updated = dbOps.uncompleteBucketItem(id, pairId);
     if (!updated) return res.status(404).json({ error: 'Item not found' });
 
     res.json({ success: true });
@@ -1864,7 +1870,22 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     },
   });
 
-  router.post('/snaps', snapUpload.single('photo'), async (req: Request, res: Response) => {
+  // Wrap the multer middleware so its errors (oversized payload, MIME
+  // reject, malformed multipart) surface as 400 to the client instead of
+  // bubbling up to Express's default error handler as a 500. Without this,
+  // the client `uploadSnap` treats the failure as a transient network
+  // problem and may retry into an infinite "上传失败" loop.
+  const snapUploadGuarded = (req: Request, res: Response, next: NextFunction) => {
+    snapUpload.single('photo')(req, res, (err: any) => {
+      if (err) {
+        const msg = err?.message || 'Upload failed';
+        return res.status(400).json({ error: msg });
+      }
+      next();
+    });
+  };
+
+  router.post('/snaps', snapUploadGuarded, async (req: Request, res: Response) => {
     const userId = req.userId!;
     if (!req.file) return res.status(400).json({ error: 'photo is required' });
     const tmpPath = req.file.path;
@@ -2076,6 +2097,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const userId = req.userId!;
     const user = dbOps.getUser(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
+    // Defense-in-depth: socket handler also rejects unpaired connections,
+    // but failing here saves a round-trip and matches every other paired-
+    // only endpoint's contract.
+    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
 
     const ticket = createWsTicket(userId, req.sessionId);
     res.json({ ticket, expires_in: 30 });

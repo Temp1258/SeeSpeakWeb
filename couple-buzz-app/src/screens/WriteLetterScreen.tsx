@@ -132,13 +132,18 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
     // fire after the second open had already populated state and clobber
     // it with an outdated draft.
     let cancelled = false;
-    Promise.all([
+    // First await any pending PUT from the previous modal session — close-
+    // then-immediately-reopen could otherwise race the previous save: GET
+    // arrives at server before that PUT, returns stale empty, user loses
+    // the last-typed characters. Resolving the in-flight save first
+    // guarantees GET sees the latest content.
+    Promise.resolve(pendingSaveRef.current ?? null).then(() => Promise.all([
       api.getLetterDraft().catch(() => ({ draft: '' })),
       storage.getUserName(),
       storage.getTimezone(),
       storage.getPartnerRemark(),
       storage.getPartnerTimezone(),
-    ]).then(([draftResp, n, tz, r, ptz]) => {
+    ])).then(([draftResp, n, tz, r, ptz]) => {
       if (cancelled) return;
       setContent(draftResp.draft || '');
       if (n) setMyName(n);
@@ -162,12 +167,18 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   // Debounced draft autosave. Without this, content typed quickly before
   // the user accidentally closes the modal (e.g. swipe-down within 500ms of
   // typing) wouldn't make it to AsyncStorage.
+  //
+  // pendingSaveRef holds the most recent in-flight setLetterDraft promise
+  // so the "open modal" effect can await it before reading the draft back.
+  // Without that serialization, close-then-quick-reopen could race the
+  // outstanding PUT and the GET would return the pre-save state.
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSaveRef = useRef<Promise<unknown> | null>(null);
   useEffect(() => {
     if (!visible) return;
     if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
     draftSaveTimer.current = setTimeout(() => {
-      api.setLetterDraft(content).catch(() => {});
+      pendingSaveRef.current = api.setLetterDraft(content).catch(() => {});
     }, 400);
     return () => {
       if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
@@ -342,7 +353,10 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
     // Saving in 'sending' would race the clear and could resurrect a
     // sent letter as a draft on next open.
     if (stage !== 'sending') {
-      api.setLetterDraft(content).catch(() => {});
+      // Track this flush in pendingSaveRef so a subsequent reopen awaits
+      // it before reading the draft back — same race rationale as the
+      // debounced save above.
+      pendingSaveRef.current = api.setLetterDraft(content).catch(() => {});
     }
     onClose();
   }, [stage, content, onClose]);

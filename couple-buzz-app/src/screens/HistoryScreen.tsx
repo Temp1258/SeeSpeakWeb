@@ -519,6 +519,11 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       // appear again if there are now (newer) unread partner messages.
       setDividerDismissing(false);
       setDividerHardHidden(false);
+      // Stale flag scoped to this focus session. Set to true in cleanup so
+      // late-arriving fetches (started just before blur) skip their setState
+      // and don't trigger "setState on unmounted" warnings or scribble over
+      // a freshly-mounted next session's state.
+      let stale = false;
       loadHistory(true);
       // Socket `action_new` is the primary live path; this polling exists as
       // a safety net for the case where the socket has disconnected and
@@ -527,6 +532,7 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       const interval = setInterval(async () => {
         try {
           const result = await api.getHistory(100);
+          if (stale) return;
           const reversed = [...result.actions].reverse();
           const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
           if (latestId !== prevLatestIdRef.current) {
@@ -548,6 +554,7 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         loadHistory(false);
       });
       return () => {
+        stale = true;
         clearInterval(interval);
         unsubAction();
         // Reset panel state so re-entering 废话区 always starts collapsed —

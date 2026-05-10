@@ -23,9 +23,24 @@ const LEGACY_KEYS = [
   'couple_buzz_write_letter_draft',
 ];
 
+// AsyncStorage.getItem typically resolves to string|null, but in rare
+// extreme conditions (iOS native SQLite back-end corruption, full-disk
+// errors, JsonError on a forced restore) it can throw. Without this
+// wrapper, that exception bubbles into App.tsx's bootstrap effect and
+// the user is stuck on the loading spinner forever. Returning null keeps
+// the rest of the app on the "I have no cached value" path so the user
+// can at least re-login.
+async function safeGet(key: string): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
 export const storage = {
   async getUserId(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.USER_ID);
+    return safeGet(KEYS.USER_ID);
   },
 
   async setUserId(id: string): Promise<void> {
@@ -33,7 +48,7 @@ export const storage = {
   },
 
   async getPartnerName(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.PARTNER_NAME);
+    return safeGet(KEYS.PARTNER_NAME);
   },
 
   async setPartnerName(name: string): Promise<void> {
@@ -41,7 +56,7 @@ export const storage = {
   },
 
   async getUserName(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.USER_NAME);
+    return safeGet(KEYS.USER_NAME);
   },
 
   async setUserName(name: string): Promise<void> {
@@ -49,7 +64,7 @@ export const storage = {
   },
 
   async getAccessToken(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.ACCESS_TOKEN);
+    return safeGet(KEYS.ACCESS_TOKEN);
   },
 
   async setAccessToken(token: string): Promise<void> {
@@ -57,7 +72,7 @@ export const storage = {
   },
 
   async getRefreshToken(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.REFRESH_TOKEN);
+    return safeGet(KEYS.REFRESH_TOKEN);
   },
 
   async setRefreshToken(token: string): Promise<void> {
@@ -78,7 +93,7 @@ export const storage = {
   },
 
   async getTimezone(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.TIMEZONE);
+    return safeGet(KEYS.TIMEZONE);
   },
 
   async setTimezone(tz: string): Promise<void> {
@@ -86,7 +101,7 @@ export const storage = {
   },
 
   async getPartnerTimezone(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.PARTNER_TIMEZONE);
+    return safeGet(KEYS.PARTNER_TIMEZONE);
   },
 
   async setPartnerTimezone(tz: string): Promise<void> {
@@ -94,7 +109,7 @@ export const storage = {
   },
 
   async getPartnerRemark(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.PARTNER_REMARK);
+    return safeGet(KEYS.PARTNER_REMARK);
   },
 
   async setPartnerRemark(remark: string): Promise<void> {
@@ -102,7 +117,7 @@ export const storage = {
   },
 
   async getPartnerId(): Promise<string | null> {
-    return AsyncStorage.getItem(KEYS.PARTNER_ID);
+    return safeGet(KEYS.PARTNER_ID);
   },
 
   async setPartnerId(id: string): Promise<void> {
@@ -111,7 +126,11 @@ export const storage = {
 
   async clearAll(): Promise<void> {
     // Legacy keys included so a logout / force-revoke wipes any stragglers
-    // from before the Step 4 server-side migration.
-    await AsyncStorage.multiRemove([...Object.values(KEYS), ...LEGACY_KEYS]);
+    // from before the Step 4 server-side migration. Wrapped because a
+    // failing multiRemove must not block the "you've been logged out" UX —
+    // the caller has already set appState='setup' optimistically.
+    try {
+      await AsyncStorage.multiRemove([...Object.values(KEYS), ...LEGACY_KEYS]);
+    } catch {}
   },
 };

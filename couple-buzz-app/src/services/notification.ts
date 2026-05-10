@@ -27,6 +27,22 @@ export async function requestPermissions(): Promise<boolean> {
   return finalStatus === 'granted';
 }
 
+// Read-only permission status — Settings UI can surface "通知权限：已禁用 ·
+// 去 iOS 设置开启" when the user has explicitly denied. Distinct from
+// `getDeviceToken() === null`, which conflates "denied" with "transient
+// failure" and offers no actionable hint.
+export type NotificationPermission = 'granted' | 'denied' | 'undetermined';
+export async function getNotificationPermissionStatus(): Promise<NotificationPermission> {
+  try {
+    const { status } = await Notifications.getPermissionsAsync();
+    if (status === 'granted') return 'granted';
+    if (status === 'denied') return 'denied';
+    return 'undetermined';
+  } catch {
+    return 'undetermined';
+  }
+}
+
 export async function getDeviceToken(): Promise<string | null> {
   if (Platform.OS === 'web') return null;
 

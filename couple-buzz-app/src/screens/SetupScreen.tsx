@@ -53,7 +53,7 @@ export default function SetupScreen({ onRegistered }: Props) {
 
   const handleRegister = async () => {
     if (!name.trim()) { Alert.alert('', '请输入昵称'); return; }
-    if (password.length < 4) { Alert.alert('', '密码至少4位'); return; }
+    if (password.length < 6) { Alert.alert('', '密码至少6位'); return; }
 
     setLoading(true);
     try {
@@ -140,7 +140,7 @@ export default function SetupScreen({ onRegistered }: Props) {
           <View style={styles.form}>
             <TextInput style={styles.input} placeholder="昵称" placeholderTextColor={COLORS.textLight}
               value={name} onChangeText={setName} maxLength={20} autoFocus />
-            <TextInput style={styles.input} placeholder="设置密码（至少4位）" placeholderTextColor={COLORS.textLight}
+            <TextInput style={styles.input} placeholder="设置密码（至少6位）" placeholderTextColor={COLORS.textLight}
               value={password} onChangeText={setPassword} secureTextEntry maxLength={32} />
             <TouchableOpacity style={[styles.button, loading && styles.buttonDisabled]}
               onPress={handleRegister} disabled={loading}>

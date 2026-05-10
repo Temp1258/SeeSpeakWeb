@@ -394,8 +394,8 @@ export default function App() {
 
       try {
         const status = await api.getStatus();
-        // Cache the user's own name so screens that display it (MailboxCard,
-        // InboxScreen, etc.) don't fall back to "我" for users who logged in
+        // Cache the user's own name so screens that display it (InboxScreen,
+        // OutboxScreen, etc.) don't fall back to "我" for users who logged in
         // (vs registered) and never saved in Settings.
         if (status.name) await storage.setUserName(status.name);
         if (status.paired && status.partner_name) {
@@ -495,14 +495,17 @@ export default function App() {
   // starting cursor for mark-read.
   useEffect(() => {
     if (appState !== 'ready') return;
+    let cancelled = false;
     (async () => {
       try {
         const result = await api.getHistory(1);
+        if (cancelled) return;
         if (result.actions.length > 0) {
           lastSeenIdRef.current = result.actions[0].id;
         }
       } catch {}
     })();
+    return () => { cancelled = true; };
   }, [appState]);
 
   // Foreground = clear the visual icon badge so a stale "5" doesn't linger.

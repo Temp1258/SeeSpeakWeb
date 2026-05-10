@@ -498,7 +498,7 @@ export interface DbOps {
   // Time Capsules
   createCapsule(userId: string, partnerId: string, pairId: string, content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): TimeCapsule;
   getCapsules(pairId: string): TimeCapsule[];
-  openCapsule(id: number): boolean;
+  openCapsule(id: number, pairId: string): boolean;
   // `nowIso` is the cutoff: any capsule with unlock_at <= nowIso, not yet
   // opened, and not yet notified is due for a push.
   getUnlockableCapsules(nowIso: string): TimeCapsule[];
@@ -508,8 +508,8 @@ export interface DbOps {
   // Bucket List
   createBucketItem(userId: string, partnerId: string, pairId: string, title: string, category: string | null): BucketItem;
   getBucketItems(pairId: string): BucketItem[];
-  completeBucketItem(id: number, userId: string): boolean;
-  uncompleteBucketItem(id: number): boolean;
+  completeBucketItem(id: number, userId: string, pairId: string): boolean;
+  uncompleteBucketItem(id: number, pairId: string): boolean;
   deleteBucketItem(id: number, userId: string, partnerId: string): boolean;
   // Daily Snaps
   saveSnap(userId: string, snapDate: string, photoPath: string): boolean;
@@ -2098,7 +2098,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     'SELECT * FROM time_capsules WHERE pair_id = ? ORDER BY unlock_date ASC'
   );
   const stmtOpenCapsule = db.prepare(
-    'UPDATE time_capsules SET opened_at = CURRENT_TIMESTAMP WHERE id = ? AND opened_at IS NULL'
+    'UPDATE time_capsules SET opened_at = CURRENT_TIMESTAMP WHERE id = ? AND pair_id = ? AND opened_at IS NULL'
   );
   const stmtUnlockableCapsules = db.prepare(
     'SELECT * FROM time_capsules WHERE unlock_at <= ? AND opened_at IS NULL AND notified_at IS NULL'
@@ -2116,10 +2116,10 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     'SELECT * FROM bucket_items WHERE pair_id = ? ORDER BY completed ASC, created_at DESC'
   );
   const stmtCompleteBucket = db.prepare(
-    'UPDATE bucket_items SET completed = 1, completed_by = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?'
+    'UPDATE bucket_items SET completed = 1, completed_by = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ? AND pair_id = ?'
   );
   const stmtUncompleteBucket = db.prepare(
-    'UPDATE bucket_items SET completed = 0, completed_by = NULL, completed_at = NULL WHERE id = ?'
+    'UPDATE bucket_items SET completed = 0, completed_by = NULL, completed_at = NULL WHERE id = ? AND pair_id = ?'
   );
   const stmtDeleteBucket = db.prepare(
     'DELETE FROM bucket_items WHERE id = ? AND (user_id = ? OR partner_id = ?)'
@@ -2997,8 +2997,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return stmtGetCapsules.all(pairId) as TimeCapsule[];
     },
 
-    openCapsule(id: number): boolean {
-      const result = stmtOpenCapsule.run(id);
+    openCapsule(id: number, pairId: string): boolean {
+      const result = stmtOpenCapsule.run(id, pairId);
       return result.changes > 0;
     },
 
@@ -3024,13 +3024,13 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return stmtGetBucketItems.all(pairId) as BucketItem[];
     },
 
-    completeBucketItem(id: number, userId: string): boolean {
-      const result = stmtCompleteBucket.run(userId, id);
+    completeBucketItem(id: number, userId: string, pairId: string): boolean {
+      const result = stmtCompleteBucket.run(userId, id, pairId);
       return result.changes > 0;
     },
 
-    uncompleteBucketItem(id: number): boolean {
-      const result = stmtUncompleteBucket.run(id);
+    uncompleteBucketItem(id: number, pairId: string): boolean {
+      const result = stmtUncompleteBucket.run(id, pairId);
       return result.changes > 0;
     },
 

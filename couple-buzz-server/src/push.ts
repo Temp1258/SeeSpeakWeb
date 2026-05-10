@@ -115,6 +115,14 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
 
 let provider: apn.Provider | null = null;
 
+// Test-only escape hatch — Jest's per-file module isolation means production
+// callers won't ever invoke this. Lets a test reset module state between
+// runs to avoid bleed-through when a test wants to verify init paths.
+export function _resetAPNsForTesting(): void {
+  cleanupDbOps = null;
+  provider = null;
+}
+
 export function initAPNs(dbOps?: DbOps): void {
   if (dbOps) cleanupDbOps = dbOps;
 
@@ -211,7 +219,9 @@ export async function sendPush(
         if ((reason && INVALID_TOKEN_REASONS.has(reason)) || f.status === 410) {
           cleanupDbOps?.clearDeviceTokenByValue(deviceToken);
           console.log(`[APNs] Evicted stale device token (reason: ${reason ?? f.status})`);
-          break;
+          // No `break` — sendPush always sends to a single token so failed
+          // is at most 1 entry. Future-proof: if this ever grows to a
+          // batch, every failed token gets cleaned, not just the first.
         }
       }
       return false;

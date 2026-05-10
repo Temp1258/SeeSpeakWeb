@@ -17,7 +17,16 @@ function emit(event: string, ...args: any[]) {
 export function subscribe(event: string, fn: Listener): () => void {
   if (!listeners[event]) listeners[event] = new Set();
   listeners[event].add(fn);
-  return () => { listeners[event]?.delete(fn); };
+  return () => {
+    const set = listeners[event];
+    if (!set) return;
+    set.delete(fn);
+    // Drop the event key once empty so the listeners object stays
+    // bounded as users navigate. Otherwise the entry persists even when
+    // no one is listening, eventually accreting one entry per unique
+    // event name the app has ever subscribed to.
+    if (set.size === 0) delete listeners[event];
+  };
 }
 
 export async function connectSocket(): Promise<void> {

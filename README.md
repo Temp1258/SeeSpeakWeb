@@ -2,8 +2,8 @@
 
 > 一款专为情侣两人设计的亲密互动 App。把日常的小事攒成关系里的仪式感。
 
-[![Release](https://img.shields.io/badge/release-v1.2.12-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.12)
-[![Tests](https://img.shields.io/badge/tests-137%20passing-success)](./couple-buzz-server)
+[![Release](https://img.shields.io/badge/release-v1.2.14-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.14)
+[![Tests](https://img.shields.io/badge/tests-171%20passing-success)](./couple-buzz-server)
 [![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-iOS-lightgrey)]()
 [![Stack](https://img.shields.io/badge/stack-RN%20%2B%20Expo%20%2B%20Node-brightgreen)]()
@@ -200,7 +200,39 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 | Presence 残留 | disconnect 1.5s grace + stale-closure guard（旧 closure 通过身份 token 比对识别已被新 session 覆盖）+ on-connect 给孤身 socket 补 `presence_single` |
 | 数据备份 | GPG 公钥加密（AES-256），私钥离线 U 盘 + 密码管理器 passphrase |
 
-### v1.2.12（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.12)）
+### v1.2.14（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.14)）
+
+**16 项 M / L 级审计修复**
+
+- **M1** `/api/dates` 未配对早返回字段名 `nearest` → `pinned`，与 paired 路径一致
+- **M2** `/api/profile` `partner_remark` 提交前 trim：whitespace-only 清空备注、超长按 trim 后判
+- **M3** HistoryScreen 30s 兜底轮询加 per-focus `stale` flag — 切 tab 时 in-flight fetch 不再 setState 出 RN warning
+- **M4** `time_capsules` / `bucket_items` UPDATE 加 `AND pair_id = ?` 防御层（既有路由 pre-check 之外的二道防线）
+- **M5** WriteLetterScreen `pendingSaveRef` — 关→快速重开模态时先 await 上一次 in-flight 草稿 PUT 再 GET，避免读到 stale draft
+- **M6** AsyncStorage getter 全部走 `safeGet()` wrapper，存储底层抛错时返回 null 而不是 unhandled rejection 卡死 loading
+- **M7** `push.ts` INVALID_TOKEN 清理移除 `break` — 单 token 时行为不变，未来改 batch 时每个失效 token 都被清
+- **M8** socket client `subscribe` unsubscribe 后 `if (set.size === 0) delete listeners[event]` — listeners 对象不再线性 grow
+- **L1** `/api/snaps` multer error 用 wrapper 转 400 JSON，避免客户端把 multer 500 误判为网络问题死循环重传
+- **L2** App.tsx bootstrap `getHistory(1)` 加 cancelled flag，rapid 退出登录时已发出 fetch 不再写 ref
+- **L3** `/api/ws-ticket` 加 `if (!user.partner_id) return 400`，未配对时不再发空 ticket
+- **L4** `startScheduler` 检查 `SCHEDULER_DISABLED=1` 环境变量，pm2 cluster 模式时可指定单进程跑调度，防多进程重复推送
+- **L5** `/register` password 最小 4 位 → 6 位，客户端 SetupScreen 同步 placeholder + alert
+- **L6** `push.ts` 加 `_resetAPNsForTesting()` export — 测试隔离更干净
+- **L7** `notification.ts` 新增 `getNotificationPermissionStatus()` 暴露 granted/denied/undetermined，Settings UI 后续可加"通知权限被禁用"提示
+- **L8** 删除 v1.1 重构后未再被 import 的 `MailboxCard.tsx` / `TimeCapsuleCard.tsx` 死代码（共 350 行）
+- 24 个新回归测试（171 / 171 全过；上一版 147）
+
+### v1.2.13（2026-05-10）
+
+**4 项 HIGH 级审计修复**
+
+- **H1** HistoryScreen 用 `normalizeIso` 替代 `+ 'Z'` 拼 SQLite 时间戳：Hermes 解析 `'2026-05-10 12:34:56Z'` 不稳，跨时区情侣可能看到错位时间或所有消息挤进同一日期分组
+- **H2** App.tsx `coldStartConsumedRef` 在 appState 离开 'ready' 时复位：解决"强制下线 → 重新登录" 同进程内点通知不再跳转到对应 tab 的问题
+- **H3** 服务端 3 个 endpoint 新增 `emit('daily_update', ...)` (`/daily-question/answer` / `/snaps` / `/daily-reaction`)，DailyQuestionCard / DailySnapCard 精确订阅：双方同在「每日」tab 时一方答完题对方屏幕立刻刷新
+- **H4** socket 客户端 `connect_error` handler 入口捕获 `myInstance`，await 后比对 `socket === myInstance` 守卫：AppState 后台→前台触发 disconnect+connect 时不再把旧 handler 的新 ticket 串到新 socket
+- 10 个新回归测试（137 → 147）
+
+### v1.2.12（2026-05-10）
 
 **「半日达」更名 + 信箱底部下次送达预告**
 
@@ -447,7 +479,13 @@ OTA 推送后手机端**冷启动两次**生效。
 
 ## Roadmap
 
-### v1.2.12（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.12)）
+### v1.2.14（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.14)）
+- [x] **16 项 M / L 级审计修复** — `/api/dates` 字段一致性 / partner_remark trim / HistoryScreen 轮询 stale flag / pair_id 防御层 / 草稿 PUT 串行化 / AsyncStorage 容错 / socket listeners 自动收尾 / multer 错误 400 化 / scheduler env gate / 密码 ≥ 6 位 / 删死代码 350 行 / 24 个新回归测试
+
+### v1.2.13（2026-05-10）
+- [x] **4 项 HIGH 级审计修复** — HistoryScreen normalizeIso / coldStartRef 复位 / 每日 socket 实时同步 / socket connect_error 实例守卫 + 10 个新回归测试
+
+### v1.2.12（2026-05-10）
 - [x] **「半日达」更名** — 全仓库 26 处 `次日达` → `半日达`（4 个推送模板 + App 全部 UI 文案 + README + 注释）
 - [x] **信箱底部下次送达预告** — 写信 pill 下方"下个半日达将于 ... 寄达"，按用户 tz 渲染，对齐 0:00 / 12:00 UTC 边界
 
