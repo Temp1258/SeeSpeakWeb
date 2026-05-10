@@ -2,8 +2,8 @@
 
 > 一款专为情侣两人设计的亲密互动 App。把日常的小事攒成关系里的仪式感。
 
-[![Release](https://img.shields.io/badge/release-v1.2.14-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.14)
-[![Tests](https://img.shields.io/badge/tests-171%20passing-success)](./couple-buzz-server)
+[![Release](https://img.shields.io/badge/release-v1.2.15-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.15)
+[![Tests](https://img.shields.io/badge/tests-181%20passing-success)](./couple-buzz-server)
 [![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-iOS-lightgrey)]()
 [![Stack](https://img.shields.io/badge/stack-RN%20%2B%20Expo%20%2B%20Node-brightgreen)]()
@@ -200,7 +200,17 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 | Presence 残留 | disconnect 1.5s grace + stale-closure guard（旧 closure 通过身份 token 比对识别已被新 session 覆盖）+ on-connect 给孤身 socket 补 `presence_single` |
 | 数据备份 | GPG 公钥加密（AES-256），私钥离线 U 盘 + 密码管理器 passphrase |
 
-### v1.2.14（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.14)）
+### v1.2.15（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.15)）
+
+**4 处验收清单测试覆盖补齐**
+
+- `GET /health` 加 supertest + 静态检查（生产 index.ts 注册的契约 `{status:'ok',timestamp}` 必须对得上）
+- L5 客户端 `SetupScreen.tsx` 静态检查 `password.length < 6` + Alert 文案「密码至少6位」+ placeholder「至少6位」
+- H3 客户端 `DailyQuestionCard` / `DailySnapCard` 静态检查 `subscribe('daily_update', ...)` + 各自的 kind/target 过滤分支 + load() 真的调到（防 no-op stub regression）
+- POST `/api/snaps` 显式 happy-path 测试（前一版只在 H3 emit 测试里隐式覆盖，新加一条独立断言"L1 multer wrapper 没把正常上传也变 400"）
+- 181 / 181 测试全过（171 → 181，+10）
+
+### v1.2.14（2026-05-10）
 
 **16 项 M / L 级审计修复**
 
@@ -479,7 +489,10 @@ OTA 推送后手机端**冷启动两次**生效。
 
 ## Roadmap
 
-### v1.2.14（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.14)）
+### v1.2.15（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.15)）
+- [x] **验收清单测试补齐** — `/health` / SetupScreen 客户端密码校验 / DailyCard 客户端 subscribe / 快照上传 happy path 显式断言 + 10 个新测试
+
+### v1.2.14（2026-05-10）
 - [x] **16 项 M / L 级审计修复** — `/api/dates` 字段一致性 / partner_remark trim / HistoryScreen 轮询 stale flag / pair_id 防御层 / 草稿 PUT 串行化 / AsyncStorage 容错 / socket listeners 自动收尾 / multer 错误 400 化 / scheduler env gate / 密码 ≥ 6 位 / 删死代码 350 行 / 24 个新回归测试
 
 ### v1.2.13（2026-05-10）
