@@ -2,7 +2,7 @@
 
 > 一款专为情侣两人设计的亲密互动 App。把日常的小事攒成关系里的仪式感。
 
-[![Release](https://img.shields.io/badge/release-v1.2.15-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.15)
+[![Release](https://img.shields.io/badge/release-v1.2.16-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.16)
 [![Tests](https://img.shields.io/badge/tests-181%20passing-success)](./couple-buzz-server)
 [![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-iOS-lightgrey)]()
@@ -164,7 +164,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 - Multer（图片上传 5MB + image MIME 白名单 + atomic tmp/rename 防覆写）
 - JWT + scrypt 密码哈希 + refresh token 哈希存储 + 并发轮换锁 + 事务化轮换 + per-session 设备元信息 + 强制下线即时生效
 - node-cron 调度（mailbox reveal / capsule unlock / 周报 / couple TTL 03:00 UTC 硬删，capsule 推送 `notified_at` 列持久 dedup）
-- Jest + supertest（**130 个接口测试用例**）
+- Jest + supertest（**181 个接口测试用例**）
 - express-rate-limit
 - GPG 加密备份 + cron + 离线私钥
 
@@ -200,7 +200,17 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 | Presence 残留 | disconnect 1.5s grace + stale-closure guard（旧 closure 通过身份 token 比对识别已被新 session 覆盖）+ on-connect 给孤身 socket 补 `presence_single` |
 | 数据备份 | GPG 公钥加密（AES-256），私钥离线 U 盘 + 密码管理器 passphrase |
 
-### v1.2.15（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.15)）
+### v1.2.16（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.16)）
+
+**README docs 同步**
+
+- 测试数从 stale 的 130 同步成实际的 181（技术栈描述 + 跑测试说明 两处）
+- 项目结构 `components/` 列表移除已删的 `MailboxCard / TimeCapsuleCard`，补上 `DailyQuestionCard / DailySnapCard / RitualButton / TouchArea / ActionRecord / ReactionPicker`
+- 项目结构 `utils/` 列表把不存在的 `outboxFresh` 改成实际的 `outboxEvents`，补上 `device / timezone`
+- v1.2.14 changelog 把 "L8 删除 350 行" 修正为 "~950 行"（实际 433+516=949）
+- Roadmap backfill v1.2.7—v1.2.11 五个版本（之前从 v1.2.6 直接跳到 v1.2.12，缺了 sessions 多设备打磨那批）
+
+### v1.2.15（2026-05-10）
 
 **4 处验收清单测试覆盖补齐**
 
@@ -229,7 +239,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 - **L5** `/register` password 最小 4 位 → 6 位，客户端 SetupScreen 同步 placeholder + alert
 - **L6** `push.ts` 加 `_resetAPNsForTesting()` export — 测试隔离更干净
 - **L7** `notification.ts` 新增 `getNotificationPermissionStatus()` 暴露 granted/denied/undetermined，Settings UI 后续可加"通知权限被禁用"提示
-- **L8** 删除 v1.1 重构后未再被 import 的 `MailboxCard.tsx` / `TimeCapsuleCard.tsx` 死代码（共 350 行）
+- **L8** 删除 v1.1 重构后未再被 import 的 `MailboxCard.tsx` / `TimeCapsuleCard.tsx` 死代码（共 ~950 行）
 - 24 个新回归测试（171 / 171 全过；上一版 147）
 
 ### v1.2.13（2026-05-10）
@@ -387,9 +397,9 @@ PoopHub/
 │   ├── eas.json                       # EAS Build profile
 │   ├── src/
 │   │   ├── screens/                   # Home / History / Us / Mailbox / WriteLetter / Inbox / Outbox / Trash / StickyWall / AnniversaryWish / Settings / Setup
-│   │   ├── components/                # MailboxCard / TimeCapsuleCard / BucketListCard / SealAnimation / EnvelopeOpenAnimation / IslandToast / SpringPressable / StickyNote / FireworksOverlay / DeviceListCard / WeeklyReportCard / StatsCard / ...
+│   │   ├── components/                # DailyQuestionCard / DailySnapCard / RitualButton / TouchArea / BucketListCard / SealAnimation / EnvelopeOpenAnimation / IslandToast / SpringPressable / StickyNote / FireworksOverlay / DeviceListCard / WeeklyReportCard / StatsCard / ActionRecord / ReactionPicker
 │   │   ├── services/                  # api（含 sessions / sync / outbox 接口）/ socket / notification
-│   │   ├── utils/                     # storage / countdown / postmark / inboxUnread / toolbarSlot / outboxFresh
+│   │   ├── utils/                     # storage / countdown / postmark / inboxUnread / outboxEvents / toolbarSlot / device / timezone
 │   │   └── constants.ts               # 颜色 / 表情配置
 │   └── targets/widget/                # iOS WidgetKit Swift（v1.3 接通）
 │
@@ -441,7 +451,7 @@ npm run ios                 # 或 npm start 扫码
 ```bash
 cd couple-buzz-server
 JWT_SECRET=test-secret npm test
-# 130 passed
+# 181 passed
 ```
 
 ---
@@ -489,7 +499,10 @@ OTA 推送后手机端**冷启动两次**生效。
 
 ## Roadmap
 
-### v1.2.15（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.15)）
+### v1.2.16（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.16)）
+- [x] **README docs 同步** — 测试数 stale 130→181 / 项目结构 components+utils 实际化 / v1.2.14 行数 350→950 修正 / backfill v1.2.7—v1.2.11
+
+### v1.2.15（2026-05-10）
 - [x] **验收清单测试补齐** — `/health` / SetupScreen 客户端密码校验 / DailyCard 客户端 subscribe / 快照上传 happy path 显式断言 + 10 个新测试
 
 ### v1.2.14（2026-05-10）
@@ -501,6 +514,13 @@ OTA 推送后手机端**冷启动两次**生效。
 ### v1.2.12（2026-05-10）
 - [x] **「半日达」更名** — 全仓库 26 处 `次日达` → `半日达`（4 个推送模板 + App 全部 UI 文案 + README + 注释）
 - [x] **信箱底部下次送达预告** — 写信 pill 下方"下个半日达将于 ... 寄达"，按用户 tz 渲染，对齐 0:00 / 12:00 UTC 边界
+
+### v1.2.7 — v1.2.11（2026-05-07 — 05-08）
+- [x] **v1.2.11 fix(perf+ux)** — 8 处审计发现的边缘问题
+- [x] **v1.2.10 fix(sessions)** — 登录继承设备名 + 暴露本机自我提升主设备
+- [x] **v1.2.9 fix(sessions)** — 整组原子下线，修退出后残留 session 重现为「另一台设备」
+- [x] **v1.2.8 feat(sessions)** — 已登录设备按设备去重 + 自定义设备名
+- [x] **v1.2.7 docs** — 全面更新 README 反映 v1.1.6 → v1.2.6 全部变更
 
 ### v1.2.6（2026-05-07）
 - [x] **APNs badge 全推送覆盖** — `pushToUser` 兜底真实未读数（floor=1），scheduler 广播也走同一管道，~25 种推送类型桌面图标都会变红圈
