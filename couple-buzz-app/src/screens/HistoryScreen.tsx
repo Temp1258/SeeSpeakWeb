@@ -26,6 +26,7 @@ import { api, HistoryAction } from '../services/api';
 import { subscribe } from '../services/socket';
 import { storage } from '../utils/storage';
 import { getDeviceTimezone } from '../utils/timezone';
+import { normalizeIso } from '../utils/inboxUnread';
 import ActionRecord from '../components/ActionRecord';
 import { SpringPressable } from '../components/SpringPressable';
 import { useToolbarSlot } from '../utils/toolbarSlot';
@@ -103,7 +104,11 @@ function CompactActionButton({ action, onPress }: { action: ActionConfig; onPres
 }
 
 function formatTimeInZone(dateStr: string, timezone: string): string {
-  const date = new Date(dateStr + 'Z');
+  // SQLite default 'YYYY-MM-DD HH:MM:SS' (no T, no Z) is parse-undefined per
+  // ECMA-262. Hermes (RN 0.81 default) returns Invalid Date for some inputs
+  // of this shape — normalizeIso converts to canonical 'YYYY-MM-DDTHH:MM:SSZ'
+  // before handing to the Date constructor.
+  const date = new Date(normalizeIso(dateStr));
   try {
     return date.toLocaleTimeString('zh-CN', {
       timeZone: timezone,
@@ -238,9 +243,10 @@ function groupByDate(actions: HistoryAction[], myTz: string): Section[] {
   const yesterdayStr = localDateStringInTz(new Date(now.getTime() - 86400000), myTz);
 
   for (const action of actions) {
-    // Server timestamps are SQLite-default 'YYYY-MM-DD HH:MM:SS' in UTC; the
-    // 'Z' suffix forces JS Date to read them as UTC instead of local-naive.
-    const utcDate = new Date(action.created_at + 'Z');
+    // Server timestamps are SQLite-default 'YYYY-MM-DD HH:MM:SS' in UTC.
+    // Use normalizeIso so the result is canonical ISO 'YYYY-MM-DDTHH:MM:SSZ'
+    // — Hermes parses raw "<space>Z" as Invalid Date in some configurations.
+    const utcDate = new Date(normalizeIso(action.created_at));
     const dateStr = localDateStringInTz(utcDate, myTz);
     let label: string;
 

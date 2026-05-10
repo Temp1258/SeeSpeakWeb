@@ -1020,6 +1020,11 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       await pushToUser(dbOps, pushFn, partner.id, bothAnswered ? 'daily_both' : 'daily_answer', user.name);
     }
 
+    // Live update for clients staring at the 每日 tab. Without this, a
+    // partner already on Us has to leave + return (or pull-refresh) to see
+    // the new answer — APNs alone doesn't refresh foregrounded UI.
+    emitToCouple(userId, user.partner_id, 'daily_update', { from: userId, kind: 'answer' });
+
     res.json({
       success: true,
       both_answered: bothAnswered,
@@ -1905,6 +1910,9 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       await pushToUser(dbOps, pushFn, partner.id, both ? 'snap_both' : 'snap_submitted', user.name);
     }
 
+    // Live update — see /daily-question/answer for the same rationale.
+    emitToCouple(userId, user.partner_id, 'daily_update', { from: userId, kind: 'snap' });
+
     res.json({ success: true, both_snapped: both, snap_date: snapDate });
   });
 
@@ -2055,6 +2063,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       const pushType = `react_${type}_${reaction}` as 'react_question_up' | 'react_question_down' | 'react_snap_up' | 'react_snap_down';
       await pushToUser(dbOps, pushFn, partner.id, pushType, user.name);
     }
+
+    // Live update — partner staring at 每日 tab gets the 👍/👎 stamp
+    // without having to leave + return.
+    emitToCouple(userId, user.partner_id, 'daily_update', { from: userId, kind: 'reaction', target: type });
 
     res.json({ success: true, reaction });
   });

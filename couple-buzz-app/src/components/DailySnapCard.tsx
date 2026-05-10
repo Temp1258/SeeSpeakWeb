@@ -5,6 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { COLORS, API_URL } from '../constants';
 import { api, SnapTodayResponse } from '../services/api';
+import { subscribe } from '../services/socket';
 
 const URGE_COOLDOWN_MS = 5 * 1000;
 
@@ -49,6 +50,16 @@ const DailySnapCard = forwardRef<{ reload: () => Promise<void> }>((_props, ref) 
   useImperativeHandle(ref, () => ({ reload: load }), [load]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  // Live refresh when partner snaps / reacts to my snap. Mirrors
+  // DailyQuestionCard's subscription — see its comment for rationale.
+  useEffect(() => {
+    return subscribe('daily_update', (data: { kind?: string; target?: string }) => {
+      if (data?.kind === 'answer') return; // answer-only events handled by DailyQuestionCard
+      if (data?.kind === 'reaction' && data?.target !== 'snap') return;
+      load();
+    });
+  }, [load]);
 
   const handleSnap = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();

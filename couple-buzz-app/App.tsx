@@ -581,7 +581,16 @@ export default function App() {
   // launch doesn't re-route to the same stale push.
   const coldStartConsumedRef = useRef(false);
   useEffect(() => {
-    if (appState !== 'ready' || coldStartConsumedRef.current) return;
+    // Reset whenever we leave 'ready' so the next entry (e.g. force-logout
+    // from another device → user re-logs in same process) can consume any
+    // notification that arrived during the re-login window. Without this
+    // reset, the second 'ready' transition silently skips navigation and
+    // the user lands on the default tab instead of the tapped one.
+    if (appState !== 'ready') {
+      coldStartConsumedRef.current = false;
+      return;
+    }
+    if (coldStartConsumedRef.current) return;
     coldStartConsumedRef.current = true;
     (async () => {
       try {

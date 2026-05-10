@@ -12,6 +12,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../constants';
 import { api, DailyQuestionResponse } from '../services/api';
+import { subscribe } from '../services/socket';
 
 const URGE_COOLDOWN_MS = 30 * 1000;
 
@@ -41,6 +42,22 @@ const DailyQuestionCard = forwardRef<{ reload: () => Promise<void> }>((_props, r
       load();
     }, [load])
   );
+
+  // Live refresh when partner answers / reacts. Without this, a user
+  // already staring at 每日 tab has to leave + return (or pull-refresh)
+  // before the partner's answer / reaction surfaces — APNs alone never
+  // re-renders foregrounded React state. Self-echoes also fire load()
+  // once: the extra GET is harmless and the post-submit UI already
+  // matches what the server returns, so no flicker. Filter narrowed to
+  // events that actually affect THIS card (answer + reaction-on-question)
+  // so a partner reacting to a snap doesn't trigger a wasted Q reload.
+  useEffect(() => {
+    return subscribe('daily_update', (data: { kind?: string; target?: string }) => {
+      if (data?.kind === 'snap') return;
+      if (data?.kind === 'reaction' && data?.target !== 'question') return;
+      load();
+    });
+  }, [load]);
 
   const handleSubmit = async () => {
     if (!answer.trim()) return;

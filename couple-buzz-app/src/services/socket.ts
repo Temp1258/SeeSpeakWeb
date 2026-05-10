@@ -60,6 +60,14 @@ export async function connectSocket(): Promise<void> {
     });
 
     socket.on('connect_error', async (err) => {
+      // Capture the socket instance this handler belongs to. After the
+      // `await api.getWsTicket()` below, the module-level `socket` may have
+      // been swapped (e.g. AppState background → disconnectSocket() →
+      // foreground → fresh connectSocket() created a new instance during
+      // our await). Without this guard we'd feed THIS handler's new ticket
+      // to the unrelated new socket, which then connects with the wrong
+      // ticket and races the new connectSocket's own ticket fetch.
+      const myInstance = socket;
       if (err.message === 'invalid_ticket' || err.message === 'missing_ticket') {
         if (ticketRetries >= MAX_TICKET_RETRIES) {
           // Session is genuinely gone (server-side token revoked / unpair).
@@ -68,7 +76,7 @@ export async function connectSocket(): Promise<void> {
           // burning battery + bandwidth in the background. The next
           // explicit connectSocket() call (post re-login / app foreground)
           // will start fresh with the retry counter reset.
-          if (socket) {
+          if (myInstance && socket === myInstance) {
             socket.disconnect();
             socket = null;
           }
@@ -77,9 +85,12 @@ export async function connectSocket(): Promise<void> {
         ticketRetries++;
         try {
           const { ticket: newTicket } = await api.getWsTicket();
-          if (socket) {
-            socket.auth = { ticket: newTicket };
-            socket.connect();
+          // After the await, only mutate if the active socket is still
+          // the one this handler was attached to — otherwise we'd corrupt
+          // a fresh connectSocket()'s in-flight handshake.
+          if (myInstance && socket === myInstance) {
+            myInstance.auth = { ticket: newTicket };
+            myInstance.connect();
           }
         } catch {
           // getWsTicket itself failed (e.g. session-level 401). The next
