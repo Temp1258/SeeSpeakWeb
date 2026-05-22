@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState, useMemo, forwardRef, useImperativeHandle } from 'react';
+import React, { useCallback, useEffect, useState, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import {
   Modal,
   View,
@@ -36,6 +36,14 @@ const SCREEN_W = Dimensions.get('window').width;
 const HORIZONTAL_PADDING = 16;
 const CELL_GAP = 4;
 const CELL_SIZE = Math.floor((SCREEN_W - HORIZONTAL_PADDING * 2 - CELL_GAP * 6) / 7);
+
+// v1.3.2 — ta｜我 toggle dimensions (bottom-right segmented control).
+const TOGGLE_SEG_WIDTH = 40;
+const TOGGLE_HEIGHT = 32;
+const TOGGLE_PADDING = 4;
+// Mirror sticky-wall partner ink color so "ta" mode reads visually
+// distinct from "me" (which uses the brand pink).
+const PARTNER_ACCENT = '#7AB8D6';
 
 interface Props {
   visible: boolean;
@@ -89,6 +97,22 @@ const SnapCalendarScreen = forwardRef<SnapCalendarHandle, Props>(({ visible, onC
   const [snaps, setSnaps] = useState<SnapMonth[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<SnapMonth | null>(null);
+  // v1.3.2 — ta | 我 segmented filter. Default 'me' so users start
+  // with their own photos. Persists across this modal's open/close
+  // because the parent (MailboxScreen) keeps the component mounted;
+  // resets to 'me' on app cold start.
+  const [viewMode, setViewMode] = useState<'ta' | 'me'>('me');
+  // Indicator slide animation. 0 ⇒ "ta" segment selected, 1 ⇒ "me".
+  // useNativeDriver via translateX keeps the slide jank-free.
+  const indicatorAnim = useRef(new Animated.Value(viewMode === 'ta' ? 0 : 1)).current;
+  useEffect(() => {
+    Animated.spring(indicatorAnim, {
+      toValue: viewMode === 'ta' ? 0 : 1,
+      friction: 7,
+      tension: 80,
+      useNativeDriver: true,
+    }).start();
+  }, [viewMode, indicatorAnim]);
 
   // Map<dateKey, SnapMonth> for O(1) lookup during cell render. Re-derives
   // only when the source array changes.
@@ -222,19 +246,29 @@ const SnapCalendarScreen = forwardRef<SnapCalendarHandle, Props>(({ visible, onC
                   return <View key={`pad-${idx}`} style={styles.cellEmpty} />;
                 }
                 const snap = byDate.get(cell.dateKey);
-                const hasAny = !!snap && (!!snap.my_photo || !!snap.partner_photo);
+                // v1.3.2 — filter by the current ta/me toggle. Anti-peek
+                // is still enforced server-side (partner_photo=null when
+                // I haven't snapped that day), so a "ta" cell where I
+                // never snapped is naturally empty.
+                const visiblePhoto =
+                  viewMode === 'me' ? snap?.my_photo : snap?.partner_photo;
+                const hasVisible = !!visiblePhoto;
                 const isToday =
                   cell.dateKey ===
                   `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
                 return (
                   <TouchableOpacity
                     key={cell.dateKey}
-                    activeOpacity={hasAny ? 0.7 : 1}
-                    onPress={() => onCellTap(snap)}
+                    activeOpacity={hasVisible ? 0.7 : 1}
+                    onPress={() => hasVisible && snap && onCellTap(snap)}
                     style={[styles.cell, isToday && styles.cellToday]}
                   >
-                    {hasAny ? (
-                      <PolaroidThumb snap={snap!} dayLabel={cell.day} />
+                    {hasVisible ? (
+                      <PolaroidThumb
+                        photoUri={visiblePhoto!}
+                        dayLabel={cell.day}
+                        accent={viewMode === 'me' ? COLORS.kiss : PARTNER_ACCENT}
+                      />
                     ) : (
                       <View style={styles.cellPlain}>
                         <Text style={[styles.dayText, isToday && styles.dayTextToday]}>{cell.day}</Text>
@@ -267,7 +301,56 @@ const SnapCalendarScreen = forwardRef<SnapCalendarHandle, Props>(({ visible, onC
           </SpringPressable>
         </View>
 
-        <SnapPreviewOverlay snap={expanded} onClose={() => setExpanded(null)} />
+        {/* v1.3.2 — ta｜我 segmented control floats at the bottom-right
+            on the same row as the 收起 pill. Tapping a segment swaps
+            which photo each cell renders; the indicator pill slides
+            between segments with a spring (translateX, useNativeDriver
+            for smoothness). */}
+        <View style={[styles.toggleSlot, { bottom: insets.bottom + 16 }]} pointerEvents="box-none">
+          <View style={styles.toggleContainer}>
+            <Animated.View
+              style={[
+                styles.toggleIndicator,
+                {
+                  transform: [
+                    {
+                      translateX: indicatorAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, TOGGLE_SEG_WIDTH],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            />
+            <TouchableOpacity
+              style={styles.toggleSegment}
+              activeOpacity={0.7}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setViewMode('ta');
+              }}
+            >
+              <Text style={[styles.toggleText, viewMode === 'ta' && styles.toggleTextActive]}>ta</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.toggleSegment}
+              activeOpacity={0.7}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setViewMode('me');
+              }}
+            >
+              <Text style={[styles.toggleText, viewMode === 'me' && styles.toggleTextActive]}>我</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <SnapPreviewOverlay
+          snap={expanded}
+          viewMode={viewMode}
+          onClose={() => setExpanded(null)}
+        />
       </View>
     </Modal>
   );
@@ -275,32 +358,27 @@ const SnapCalendarScreen = forwardRef<SnapCalendarHandle, Props>(({ visible, onC
 
 export default SnapCalendarScreen;
 
-// Renders a single cell's photo content. One snap = one polaroid; both
-// snaps = two polaroids slightly offset, mine on top.
-function PolaroidThumb({ snap, dayLabel }: { snap: SnapMonth; dayLabel: number }) {
-  const mineUri = snap.my_photo ? `${API_URL}${snap.my_photo}` : null;
-  const partnerUri = snap.partner_photo ? `${API_URL}${snap.partner_photo}` : null;
+// v1.3.2 — single-photo polaroid (post ta/me toggle). The accent strip
+// at the bottom is pink for "me" mode, blue for "ta" mode, mirroring
+// the sticky-wall double-color convention so a quick glance is enough
+// to tell whose photo this is.
+function PolaroidThumb({
+  photoUri,
+  dayLabel,
+  accent,
+}: {
+  photoUri: string;
+  dayLabel: number;
+  accent: string;
+}) {
   return (
     <View style={polaroidStyles.wrap}>
-      {partnerUri && (
-        <Image
-          source={{ uri: partnerUri }}
-          style={[polaroidStyles.partner, polaroidStyles.frame]}
-          resizeMode="cover"
-        />
-      )}
-      {mineUri && (
-        <Image
-          source={{ uri: mineUri }}
-          style={[
-            polaroidStyles.mine,
-            polaroidStyles.frame,
-            // When ta also snapped, mine sits offset on top with a tilt.
-            partnerUri ? polaroidStyles.mineOverlap : null,
-          ]}
-          resizeMode="cover"
-        />
-      )}
+      <Image
+        source={{ uri: `${API_URL}${photoUri}` }}
+        style={[polaroidStyles.single, polaroidStyles.frame]}
+        resizeMode="cover"
+      />
+      <View style={[polaroidStyles.accentStripe, { backgroundColor: accent }]} />
       <View style={polaroidStyles.dayPill}>
         <Text style={polaroidStyles.dayPillText}>{dayLabel}</Text>
       </View>
@@ -309,8 +387,18 @@ function PolaroidThumb({ snap, dayLabel }: { snap: SnapMonth; dayLabel: number }
 }
 
 // Full-screen overlay shown when the user taps a cell with a snap. Tap
-// the dim background to close.
-function SnapPreviewOverlay({ snap, onClose }: { snap: SnapMonth | null; onClose: () => void }) {
+// the dim background to close. v1.3.2 — also respects the ta/me toggle:
+// shows only the current mode's photo, so what the user clicked in the
+// grid is what they see expanded.
+function SnapPreviewOverlay({
+  snap,
+  viewMode,
+  onClose,
+}: {
+  snap: SnapMonth | null;
+  viewMode: 'ta' | 'me';
+  onClose: () => void;
+}) {
   const opacity = React.useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (snap) {
@@ -321,21 +409,14 @@ function SnapPreviewOverlay({ snap, onClose }: { snap: SnapMonth | null; onClose
   }, [snap, opacity]);
 
   if (!snap) return null;
-  const mineUri = snap.my_photo ? `${API_URL}${snap.my_photo}` : null;
-  const partnerUri = snap.partner_photo ? `${API_URL}${snap.partner_photo}` : null;
+  const path = viewMode === 'me' ? snap.my_photo : snap.partner_photo;
+  if (!path) return null;
   return (
     <Animated.View style={[overlayStyles.backdrop, { opacity }]} pointerEvents="auto">
       <Pressable style={overlayStyles.dismissArea} onPress={onClose}>
         <View style={overlayStyles.center}>
           <Text style={overlayStyles.dateLabel}>{snap.date}</Text>
-          <View style={overlayStyles.photoStack}>
-            {mineUri && (
-              <Image source={{ uri: mineUri }} style={overlayStyles.photo} resizeMode="contain" />
-            )}
-            {partnerUri && (
-              <Image source={{ uri: partnerUri }} style={overlayStyles.photo} resizeMode="contain" />
-            )}
-          </View>
+          <Image source={{ uri: `${API_URL}${path}` }} style={overlayStyles.photo} resizeMode="contain" />
           <Text style={overlayStyles.hint}>点击空白处收起</Text>
         </View>
       </Pressable>
@@ -483,6 +564,48 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.4,
   },
+  // v1.3.2 — ta｜我 toggle (bottom-right, same row as the 收起 pill).
+  toggleSlot: {
+    position: 'absolute',
+    right: 20,
+    alignItems: 'flex-end',
+  },
+  toggleContainer: {
+    flexDirection: 'row',
+    width: TOGGLE_SEG_WIDTH * 2 + TOGGLE_PADDING * 2,
+    height: TOGGLE_HEIGHT,
+    borderRadius: TOGGLE_HEIGHT / 2,
+    backgroundColor: '#F0EBE5',
+    padding: TOGGLE_PADDING,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  toggleIndicator: {
+    position: 'absolute',
+    top: TOGGLE_PADDING,
+    left: TOGGLE_PADDING,
+    width: TOGGLE_SEG_WIDTH,
+    height: TOGGLE_HEIGHT - TOGGLE_PADDING * 2,
+    borderRadius: (TOGGLE_HEIGHT - TOGGLE_PADDING * 2) / 2,
+    backgroundColor: COLORS.kiss,
+  },
+  toggleSegment: {
+    width: TOGGLE_SEG_WIDTH,
+    height: TOGGLE_HEIGHT - TOGGLE_PADDING * 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  toggleTextActive: {
+    color: COLORS.white,
+  },
 });
 
 const polaroidStyles = StyleSheet.create({
@@ -495,25 +618,24 @@ const polaroidStyles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 3,
   },
-  partner: {
-    top: 4,
-    left: 4,
-    right: 10,
-    bottom: 10,
-    transform: [{ rotate: '-2deg' }],
+  // v1.3.2 — single-photo polaroid sized to fill the cell minus a tiny
+  // breathing border (so the frame edge reads as a polaroid border).
+  single: {
+    top: 2,
+    left: 2,
+    right: 2,
+    bottom: 6, // leave a slim strip at the bottom for the accent bar
   },
-  mine: {
-    top: 4,
-    left: 4,
-    right: 4,
-    bottom: 4,
-  },
-  mineOverlap: {
-    top: 8,
-    left: 10,
-    right: 4,
-    bottom: 6,
-    transform: [{ rotate: '2deg' }],
+  // Author color: pink for "me" mode, blue for "ta" mode. Mirrors the
+  // sticky-wall double-color convention.
+  accentStripe: {
+    position: 'absolute',
+    left: 2,
+    right: 2,
+    bottom: 2,
+    height: 3,
+    borderBottomLeftRadius: 3,
+    borderBottomRightRadius: 3,
   },
   dayPill: {
     position: 'absolute',
@@ -554,11 +676,6 @@ const overlayStyles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
-  },
-  photoStack: {
-    width: '100%',
-    gap: 12,
-    alignItems: 'center',
   },
   photo: {
     width: '100%',

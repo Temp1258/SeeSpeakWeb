@@ -375,6 +375,17 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const latestIdRef = useRef(0);
   const loadingOlderRef = useRef(false);
   const isAtBottomRef = useRef(true);
+  // v1.3.2 — gate loadOlder on USER-DRIVEN scroll only. Without this,
+  // when maintainVisibleContentPosition fails to readjust the scroll
+  // offset after a prepend (RN/SectionList iOS quirk), the user gets
+  // stranded with offset < 80, every onScroll re-triggers loadOlder,
+  // and the feed cascades back to message #1. By tracking the scroll
+  // interaction state ('idle' → 'dragging' → 'momentum' → 'idle') and
+  // also a per-interaction "fired once" flag, loadOlder fires at most
+  // once per drag-and-momentum cycle. To load another page the user
+  // has to start a NEW drag — matches "拉到哪里就刷新到哪里".
+  const interactionRef = useRef<'idle' | 'dragging' | 'momentum'>('idle');
+  const firedThisInteractionRef = useRef(false);
   const myUserIdRef = useRef('');
   // Mirror myTz state into a ref so the polling closure (re-created only
   // when its useFocusEffect deps change) can always read the latest value
@@ -689,15 +700,51 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
     // Top-edge slop for pagination — wider than the bottom one because
     // SectionList tends to report `contentOffset.y` slightly positive
     // (≈ paddingTop) even at the very top of the list.
+    //
+    // v1.3.2 guards: only fire loadOlder during user-driven scroll
+    // (drag or momentum from a drag) AND at most ONCE per interaction.
+    // Stops the cascade-to-message-#1 behaviour when prepend doesn't
+    // reposition the user away from offset 0.
     if (
+      interactionRef.current !== 'idle' &&
+      !firedThisInteractionRef.current &&
       contentOffset.y < 80 &&
       hasMore &&
       !loadingOlderRef.current &&
       rawActions.length > 0
     ) {
+      firedThisInteractionRef.current = true;
       loadOlder();
     }
   }, [hasMore, rawActions.length, loadOlder]);
+
+  // v1.3.2 — interaction state machine for pagination gating.
+  // Each new drag starts a fresh interaction (firedThisInteractionRef
+  // cleared); the interaction stays 'live' through the momentum tail
+  // and only resets to idle on momentum end (or scrollEndDrag if no
+  // momentum followed). Outside an interaction, onListScroll cannot
+  // fire loadOlder no matter what the offset is.
+  const onScrollBeginDrag = useCallback(() => {
+    interactionRef.current = 'dragging';
+    firedThisInteractionRef.current = false;
+  }, []);
+  const onScrollEndDrag = useCallback((e: { nativeEvent: { velocity?: { y?: number } } }) => {
+    // If finger lifts with velocity, momentum follows — leave the
+    // interaction alive until onMomentumScrollEnd. If no velocity,
+    // momentum will NOT start, so reset to idle right here.
+    const vy = e.nativeEvent.velocity?.y ?? 0;
+    if (Math.abs(vy) < 0.01) {
+      interactionRef.current = 'idle';
+    } else {
+      interactionRef.current = 'momentum';
+    }
+  }, []);
+  const onMomentumScrollBegin = useCallback(() => {
+    interactionRef.current = 'momentum';
+  }, []);
+  const onMomentumScrollEnd = useCallback(() => {
+    interactionRef.current = 'idle';
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -864,6 +911,10 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         keyExtractor={(item) => isDivider(item) ? 'divider' : item.id.toString()}
         onContentSizeChange={onListContentSizeChange}
         onScroll={onListScroll}
+        onScrollBeginDrag={onScrollBeginDrag}
+        onScrollEndDrag={onScrollEndDrag}
+        onMomentumScrollBegin={onMomentumScrollBegin}
+        onMomentumScrollEnd={onMomentumScrollEnd}
         scrollEventThrottle={32}
         // v1.3.1 — keep the user's visible card stationary when older
         // pages prepend. Without this, every loadOlder would yank the

@@ -363,6 +363,6 @@ describe('#3 — SnapCalendarScreen empty-area tap dismisses the modal', () => {
   it('cells still own their own onPress (so tapping a snap opens the preview, not the dismiss)', () => {
     // Cell TouchableOpacity is inside the Pressable; its onPress fires
     // before the outer Pressable, so tapping a snap shouldn't close.
-    expect(SC_SRC).toMatch(/<TouchableOpacity[\s\S]*?onPress=\{\(\)\s*=>\s*onCellTap\(snap\)\}/);
+    expect(SC_SRC).toMatch(/<TouchableOpacity[\s\S]*?onPress=\{\(\)\s*=>[\s\S]*?onCellTap\(snap\)/);
   });
 });
