@@ -47,7 +47,11 @@ interface LetterCard {
   // ISO timestamp the letter "arrived" (mailbox: reveal time of the
   // session; capsule: opened_at). Used for sort + unread comparison.
   arrivedAt: string;
-  sortAt: string;
+  // ISO timestamp the letter was WRITTEN (mailbox: partner_created_at,
+  // capsule: created_at). Used as the secondary sort key so multiple
+  // mailbox letters in the same session display in write-chronological
+  // order — newer write goes to the bottom (= more visible on open).
+  writtenAt: string;
   // Two postmark lines, formatted in their respective timezones.
   //   writtenStamp = "写于 [partner tz time when ta wrote it]"
   //   receivedStamp = "收于 [my tz time when it arrived in my inbox]"
@@ -138,7 +142,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           kind: 'mailbox',
           refId: w.partner_message_id,
           arrivedAt,
-          sortAt: arrivedAt,
+          writtenAt,
           // 写于: ta's wall-clock when they hit send (partner tz)
           writtenStamp: `写于 ${formatPostmark(writtenAt, partnerZone)}`,
           // 收于: my wall-clock when the letter was revealed in my inbox
@@ -176,7 +180,7 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           kind: 'capsule',
           refId: c.id,
           arrivedAt: capsuleArrived,
-          sortAt: capsuleArrived,
+          writtenAt: writtenIso,
           // For self-vis capsules the "ta" is also me, so 写于 still uses
           // writerZone (which equals myZone in that case).
           writtenStamp: `写于 ${formatPostmark(writtenIso, writerZone)}`,
@@ -192,7 +196,19 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
       // Oldest first → newest last. The user enters at the bottom (see the
       // scroll-to-latest effect below), so this matches "scroll up to read
       // older letters".
-      out.sort((a, b) => (a.sortAt < b.sortAt ? -1 : a.sortAt > b.sortAt ? 1 : 0));
+      //
+      // Primary key: arrivedAt ASC (older arrival earlier in the array).
+      // Secondary key: writtenAt ASC — for letters that arrived together
+      // (same mailbox session reveal), the LATER-written one ends up
+      // closer to the bottom, so it's the first thing the user sees on
+      // open. Sort is stable, so equal pairs preserve insert order.
+      out.sort((a, b) => {
+        if (a.arrivedAt < b.arrivedAt) return -1;
+        if (a.arrivedAt > b.arrivedAt) return 1;
+        if (a.writtenAt < b.writtenAt) return -1;
+        if (a.writtenAt > b.writtenAt) return 1;
+        return 0;
+      });
       setCards(out);
       // Don't reset centerIdx on background refreshes — user may have
       // scrolled. Only reset when list shape clearly changed.

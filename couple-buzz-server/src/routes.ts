@@ -284,6 +284,49 @@ function applyDeviceNameInheritance(
   return { ...deviceInfo, name: inherited };
 }
 
+// "This is the same physical device coming back" detector, keyed on
+// APNs token. The token is the only stable per-device identifier we
+// have: device_name defaults collide across iPhones (iOS 16+ without
+// entitlement always returns "iPhone"), and device_os changes on every
+// system update — neither is reliable on its own. If the supplied
+// `deviceToken` was previously bound to a still-active session of this
+// user, that session is, by definition, the same device returning
+// after a reinstall / force-quit / iOS upgrade / network-aborted
+// logout. We revoke it (so the device list doesn't accumulate a
+// duplicate row) and return the bits the caller should carry onto
+// the new session (device_name rename + is_primary flag), so the
+// re-login looks like the same row was simply refreshed.
+//
+// Returns inheritedName=null, inheritedPrimary=false when no match —
+// caller falls back to the existing applyDeviceNameInheritance / first-
+// device-claims-primary logic.
+//
+// NB: this is the ONLY auto-revoke heuristic. Two devices with the
+// same default name "iPhone" each have a DIFFERENT APNs token and
+// won't trigger this check — they correctly remain as two rows.
+function reclaimSameDeviceSession(
+  dbOps: DbOps,
+  userId: string,
+  deviceToken: string | undefined | null,
+): { inheritedName: string | null; inheritedPrimary: boolean } {
+  if (!deviceToken || typeof deviceToken !== 'string') {
+    return { inheritedName: null, inheritedPrimary: false };
+  }
+  const row = dbOps.getDeviceTokenRow(deviceToken);
+  if (!row || row.user_id !== userId || !row.session_id) {
+    return { inheritedName: null, inheritedPrimary: false };
+  }
+  const oldSession = dbOps.getActiveSessionForUser(userId, row.session_id);
+  if (!oldSession) return { inheritedName: null, inheritedPrimary: false };
+  const inheritedName = oldSession.device_name?.trim() || null;
+  const inheritedPrimary = oldSession.is_primary === 1;
+  // revokeSession is wrapped in a transaction that also drops the
+  // device_tokens row tied to that session_id, so by the time the new
+  // session is issued the apns_token slot is free to bind to it.
+  dbOps.revokeSession(row.session_id);
+  return { inheritedName, inheritedPrimary };
+}
+
 function issueTokens(
   dbOps: DbOps,
   userId: string,
@@ -372,6 +415,14 @@ export function createPublicRouter(dbOps: DbOps): Router {
       return res.status(401).json({ error: 'Invalid ID or password' });
     }
 
+    // Same-device reclamation: if this login carries an APNs token that
+    // was previously bound to a still-active session of this user, that
+    // session IS the same physical device coming back (reinstall, iOS
+    // upgrade, force-quit without explicit logout, etc.). Revoke it BEFORE
+    // computing hasPrimary / inheriting the name, so the new session
+    // smoothly takes over with the same identity (name + primary).
+    const reclaimed = reclaimSameDeviceSession(dbOps, user.id, device_token);
+
     // Login on a new device: mark primary only if the user has no
     // primary right now (e.g. they only had legacy/sidless tokens, or
     // their previous primary was force-revoked). Otherwise leave the
@@ -380,13 +431,19 @@ export function createPublicRouter(dbOps: DbOps): Router {
     const hasPrimary = dbOps
       .listSessionsForUser(user.id, '')
       .some((s) => s.is_primary);
-    const deviceInfo = applyDeviceNameInheritance(
-      dbOps,
-      user.id,
-      parseDeviceInfo(req.body),
-    );
+    let deviceInfo = parseDeviceInfo(req.body);
+    if (reclaimed.inheritedName && deviceInfo) {
+      // Strong signal (APNs token match) — carry forward the prior
+      // session's name verbatim. Beats the OS-family-keyed lookup
+      // applyDeviceNameInheritance does, which can miss across iOS
+      // upgrades (device_os string changes).
+      deviceInfo = { ...deviceInfo, name: reclaimed.inheritedName };
+    } else {
+      deviceInfo = applyDeviceNameInheritance(dbOps, user.id, deviceInfo);
+    }
+    const isPrimary = reclaimed.inheritedPrimary || !hasPrimary;
     const { access_token, refresh_token, session_id } = issueTokens(
-      dbOps, user.id, user.token_version, deviceInfo, !hasPrimary,
+      dbOps, user.id, user.token_version, deviceInfo, isPrimary,
     );
 
     if (device_token) {
@@ -741,7 +798,34 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // Same-device reclamation fallback: when /login didn't carry an APNs
+    // token (first install before permission grant, older client), the
+    // duplicate-session cleanup happens here instead. If this token was
+    // previously bound to a DIFFERENT active session of MINE, that
+    // session is the same physical device — revoke it so the device
+    // list collapses back to one row. Transfer primary if needed.
+    const existing = dbOps.getDeviceTokenRow(device_token);
+    if (existing
+        && existing.user_id === userId
+        && existing.session_id
+        && existing.session_id !== req.sessionId) {
+      const oldSession = dbOps.getActiveSessionForUser(userId, existing.session_id);
+      if (oldSession) {
+        const wasPrimary = oldSession.is_primary === 1;
+        dbOps.revokeSession(existing.session_id);
+        if (wasPrimary && req.sessionId) {
+          dbOps.setPrimarySession(userId, req.sessionId);
+        }
+      }
+    }
+
     dbOps.setDeviceToken(userId, device_token);
+    // Keep the apns_token row's session_id in sync with the caller's
+    // session so a future force-logout / group-revoke cleanly drops the
+    // push registration via stmtDeleteDeviceTokensBySession.
+    if (req.sessionId) {
+      dbOps.attachDeviceTokenToSession(device_token, req.sessionId);
+    }
     res.json({ success: true });
   });
 
@@ -1652,6 +1736,24 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!pairId) return res.json({ capsules: [] });
 
     const nowIso = new Date().toISOString();
+
+    // Auto-open sweep: any capsule whose unlock instant has passed and where
+    // the current user is the RECIPIENT gets opened on read. Mirrors
+    // mailbox's "session reveal at scheduled time" semantic — recipient
+    // never has to tap "open envelope" for the content to materialise.
+    // Without this, capsules sit with opened_at=null forever (no client
+    // path calls POST /capsules/:id/open) and InboxScreen drops them. The
+    // SQL UPDATE has a `WHERE opened_at IS NULL` guard, so a concurrent
+    // request that already opened the row is harmless (changes=0).
+    for (const c of dbOps.getCapsules(pairId)) {
+      if (c.opened_at) continue;
+      if (c.unlock_at > nowIso) continue;
+      const isSelfRecipient = c.visibility === 'self' && c.user_id === userId;
+      const isPartnerRecipient = c.visibility === 'partner' && c.user_id !== userId;
+      if (!isSelfRecipient && !isPartnerRecipient) continue;
+      dbOps.openCapsule(c.id, pairId);
+    }
+
     // 'self' capsules are private to the author. 'partner' (default) capsules
     // are visible to both — the recipient gets the surprise + countdown push.
     // Recipient-side soft-deletes (trashed/purged) hide the capsule from the

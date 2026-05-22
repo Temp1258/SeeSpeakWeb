@@ -76,13 +76,14 @@ export function startScheduler(dbOps: DbOps, pushFn: SendPushFn): void {
       });
     }
 
-    // Capsule unlock pushes — fire every 5 minutes so the recipient gets
-    // notified within ~5min of the picked unlock_at instant. The minute
-    // bucket is part of the dedup key so each tick is a distinct event.
-    if (utcMin % 5 === 0) {
-      const minuteBucket = now.toISOString().slice(0, 16);
-      await fireOnce(`capsule_${minuteBucket}`, () => checkCapsuleUnlocks(dbOps, pushFn));
-    }
+    // Capsule unlock pushes — fire every minute so a user who picked a
+    // specific minute (e.g. 20:34) gets the push at 20:34, not on the
+    // next 5-minute boundary. `notified_at` column + per-minute fireOnce
+    // dedup keep each capsule from being announced twice across restarts
+    // / clock drift. checkCapsuleUnlocks is cheap (indexed SQL on
+    // unlock_at + notified_at IS NULL); a per-minute scan is fine.
+    const minuteBucket = now.toISOString().slice(0, 16);
+    await fireOnce(`capsule_${minuteBucket}`, () => checkCapsuleUnlocks(dbOps, pushFn));
   }, 60 * 1000);
 }
 

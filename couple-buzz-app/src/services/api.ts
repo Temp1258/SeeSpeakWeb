@@ -538,13 +538,20 @@ export const api = {
     }, false);
   },
 
-  login(userId: string, password: string): Promise<LoginResponse> {
+  async login(userId: string, password: string): Promise<LoginResponse> {
+    // Pass the device-scoped APNs token cache (if any) so the server can
+    // identify "same physical device coming back" and collapse the prior
+    // session row instead of accumulating a ghost entry in the device
+    // list. Cache lives outside clearAll(), so this works across logouts.
+    // Wrapped because a storage glitch must not block login.
+    const cachedApnsToken = await storage.getApnsTokenCache().catch(() => null);
     return request('/api/login', {
       method: 'POST',
       body: JSON.stringify({
         user_id: userId,
         password,
         device: getDeviceInfo(),
+        ...(cachedApnsToken ? { device_token: cachedApnsToken } : {}),
       }),
     }, false);
   },

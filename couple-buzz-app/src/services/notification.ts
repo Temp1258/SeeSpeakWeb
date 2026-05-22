@@ -1,6 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { api } from './api';
+import { storage } from '../utils/storage';
 
 // Show banner + list + sound + badge even when the app is in the foreground.
 // Expo SDK 54 replaced `shouldShowAlert` with `shouldShowBanner` / `shouldShowList`;
@@ -61,6 +62,12 @@ export async function registerAndUpdateToken(): Promise<void> {
 
   const token = await getDeviceToken();
   if (!token) return;
+
+  // Cache device-scoped so the NEXT /login on this device can pass the
+  // token in its body — server uses it to revoke the previous session
+  // bound to the same physical device (which would otherwise show up
+  // as a duplicate row in the device list).
+  await storage.setApnsTokenCache(token).catch(() => {});
 
   try {
     await api.updateToken(token);

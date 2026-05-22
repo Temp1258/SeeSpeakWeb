@@ -29,8 +29,7 @@ import { storage } from './src/utils/storage';
 import { registerAndUpdateToken } from './src/services/notification';
 import { api, AuthError } from './src/services/api';
 import { connectSocket, disconnectSocket, subscribe } from './src/services/socket';
-import { hasUnreadInboxItems, hasFreshOutboxItems } from './src/utils/inboxUnread';
-import { subscribeOutboxChanged } from './src/utils/outboxEvents';
+import { hasUnreadInboxItems } from './src/utils/inboxUnread';
 import { refreshDeviceTimezoneCache } from './src/utils/timezone';
 import SetupScreen from './src/screens/SetupScreen';
 import HomeScreen from './src/screens/HomeScreen';
@@ -651,18 +650,22 @@ export default function App() {
   // emits sticky_update only), and background→foreground without tapping the
   // notification. Mirror MailboxScreen's own refresh triggers here so the tab
   // dot reflects sticky/inbox unread independently of the push pipeline.
+  //
+  // Only partner→me signals (sticky / inbox) drive the tab dot. The user's
+  // own outgoing letters (outbox 🚩) intentionally do NOT light the tab —
+  // see MailboxScreen for the 🚩 on the 📤 entry card, which is the
+  // dedicated affordance for "you have unseen pending sends".
   useEffect(() => {
     if (appState !== 'ready') return;
 
     const check = async () => {
       try {
-        const [stickyRes, inboxUnread, outboxFresh] = await Promise.all([
+        const [stickyRes, inboxUnread] = await Promise.all([
           api.getStickies().catch(() => null),
           hasUnreadInboxItems().catch(() => false),
-          hasFreshOutboxItems().catch(() => false),
         ]);
         const stickyUnread = stickyRes?.stickies.some(s => s.unread) ?? false;
-        if (stickyUnread || inboxUnread || outboxFresh) setUnreadForTab('Mailbox');
+        if (stickyUnread || inboxUnread) setUnreadForTab('Mailbox');
       } catch {}
     };
 
@@ -674,21 +677,10 @@ export default function App() {
       if (data?.from && data.from === myUserIdRef.current) return;
       check();
     });
-    // Local "I just sent a letter" signal — flips the 信箱 tab dot
-    // immediately, no need to wait for a poll cycle.
-    //
-    // We bypass setUnreadForTab on purpose: that helper short-circuits if
-    // the user is already on the target tab, which is precisely the case
-    // when they wrote from inside the 信箱 tab. The user explicitly asked
-    // to see the dot light up post-send regardless of where they are.
-    const unsubOutbox = subscribeOutboxChanged(() => {
-      setHasUnreadMail(true);
-    });
 
     return () => {
       appSub.remove();
       unsubSocket();
-      unsubOutbox();
     };
   }, [appState, setUnreadForTab]);
 

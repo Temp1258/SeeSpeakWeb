@@ -318,6 +318,18 @@ export interface DbOps {
   // array if the user has no devices registered (push permission denied
   // or app never opened post-install).
   getDeviceTokensForUser(userId: string): string[];
+  // Single-row lookup by apns_token. Used by the login flow to detect
+  // "this is the same physical device coming back" — the APNs token
+  // is the only stable device identifier we have (device_name / device_os
+  // are unreliable: defaults collide across devices, and device_os
+  // changes when iOS updates). Returns undefined if the token has never
+  // been registered by anyone.
+  getDeviceTokenRow(apnsToken: string): {
+    apns_token: string;
+    user_id: string;
+    session_id: string | null;
+    updated_at: string;
+  } | undefined;
   // Bind an APNs token to a particular session so a /sessions DELETE
   // can drop both atomically. Called right after register/login. No-op
   // if the apns_token row was just deleted by another race.
@@ -1631,6 +1643,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtGetDeviceTokensForUser = db.prepare(
     'SELECT apns_token FROM device_tokens WHERE user_id = ?'
   );
+  const stmtGetDeviceTokenRow = db.prepare(
+    'SELECT apns_token, user_id, session_id, updated_at FROM device_tokens WHERE apns_token = ?'
+  );
   const stmtAttachDeviceTokenToSession = db.prepare(
     'UPDATE device_tokens SET session_id = ? WHERE apns_token = ?'
   );
@@ -2458,6 +2473,12 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     getDeviceTokensForUser(userId: string): string[] {
       const rows = stmtGetDeviceTokensForUser.all(userId) as { apns_token: string }[];
       return rows.map((r) => r.apns_token);
+    },
+
+    getDeviceTokenRow(apnsToken: string) {
+      return stmtGetDeviceTokenRow.get(apnsToken) as
+        | { apns_token: string; user_id: string; session_id: string | null; updated_at: string }
+        | undefined;
     },
 
     attachDeviceTokenToSession(apnsToken, sessionId): void {

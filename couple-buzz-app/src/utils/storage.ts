@@ -23,6 +23,14 @@ const LEGACY_KEYS = [
   'couple_buzz_write_letter_draft',
 ];
 
+// Device-scoped APNs token cache — survives clearAll() because it
+// represents THIS PHYSICAL DEVICE, not the currently logged-in account.
+// Login flow passes this to the server so it can recognise "you're the
+// same device that was logged in before, take over that row instead of
+// creating a new one in the device list". Living outside KEYS keeps it
+// out of the multiRemove sweep.
+const APNS_TOKEN_KEY = 'couple_buzz_apns_token_v1';
+
 // AsyncStorage.getItem typically resolves to string|null, but in rare
 // extreme conditions (iOS native SQLite back-end corruption, full-disk
 // errors, JsonError on a forced restore) it can throw. Without this
@@ -129,8 +137,27 @@ export const storage = {
     // from before the Step 4 server-side migration. Wrapped because a
     // failing multiRemove must not block the "you've been logged out" UX —
     // the caller has already set appState='setup' optimistically.
+    //
+    // APNS_TOKEN_KEY is intentionally EXCLUDED: the APNs token is a
+    // device fingerprint, not user state. Preserving it across logout
+    // lets the next /login on this device tell the server "I'm the
+    // same machine that was logged in last time" so it can collapse
+    // the duplicate session row instead of growing the device list.
     try {
       await AsyncStorage.multiRemove([...Object.values(KEYS), ...LEGACY_KEYS]);
     } catch {}
+  },
+
+  // Device-scoped APNs token cache — read at /login time so the server
+  // can match this physical device to its previous session and revoke
+  // the stale one. Returns null on fresh-install (registerAndUpdateToken
+  // hasn't run yet) or when push permission was never granted.
+  async getApnsTokenCache(): Promise<string | null> {
+    return safeGet(APNS_TOKEN_KEY);
+  },
+
+  async setApnsTokenCache(token: string): Promise<void> {
+    if (!token) return;
+    await AsyncStorage.setItem(APNS_TOKEN_KEY, token);
   },
 };
