@@ -18,11 +18,16 @@ interface Props {
   // initial-load batch passes false to avoid every existing item bouncing
   // when the screen first opens.
   animateOnMount?: boolean;
+  // v1.2.20 — when > 1, render a ×NN badge after the emoji. Increments
+  // trigger a one-shot scale-pop so the user notices "ta sent another
+  // one" without the bubble re-mounting. count === 1 (or omitted) hides
+  // the badge entirely so single-emoji bubbles look exactly like before.
+  count?: number;
 }
 
 export default function ActionRecord({
   userName, actionType, time, partnerTime, isMine, remark, reactions,
-  onPress, onLongPress, animateOnMount,
+  onPress, onLongPress, animateOnMount, count = 1,
 }: Props) {
   const emoji = ACTION_EMOJI[actionType] || '?';
   const displayName = !isMine && remark ? `${userName} (${remark})` : userName;
@@ -52,6 +57,23 @@ export default function ActionRecord({
     outputRange: [0, 1, 1],
   });
 
+  // ×NN bounce — fires once whenever count strictly increases (i.e. a
+  // new emoji landed in this burst while the user was already on the
+  // screen). On mount the previous count is initialised to the current
+  // count, so the initial render of a "kiss ×3" history bubble does
+  // NOT bounce — only LIVE bursts visibly pump.
+  const prevCountRef = useRef(count);
+  const countScale = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (count > prevCountRef.current) {
+      Animated.sequence([
+        Animated.spring(countScale, { toValue: 1.55, friction: 4, tension: 120, useNativeDriver: true }),
+        Animated.spring(countScale, { toValue: 1, friction: 5, tension: 90, useNativeDriver: true }),
+      ]).start();
+    }
+    prevCountRef.current = count;
+  }, [count, countScale]);
+
   return (
     <Animated.View style={{ opacity, transform: [{ scale }] }}>
       <View style={[styles.container, isMine ? styles.mine : styles.theirs]}>
@@ -62,7 +84,20 @@ export default function ActionRecord({
           delayLongPress={400}
           activeOpacity={0.7}
         >
-          <Text style={styles.emoji}>{emoji}</Text>
+          <View style={styles.emojiRow}>
+            <Text style={styles.emoji}>{emoji}</Text>
+            {count > 1 && (
+              <Animated.Text
+                style={[
+                  styles.countBadge,
+                  isMine ? styles.countBadgeMine : styles.countBadgeTheirs,
+                  { transform: [{ scale: countScale }] },
+                ]}
+              >
+                ×{count}
+              </Animated.Text>
+            )}
+          </View>
           <View style={styles.info}>
             <Text style={styles.name}>{displayName}</Text>
             {partnerTime && !isMine ? (
@@ -116,9 +151,26 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
+  emojiRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 10,
+  },
   emoji: {
     fontSize: 24,
-    marginRight: 10,
+  },
+  countBadge: {
+    marginLeft: 4,
+    fontSize: 15,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+    letterSpacing: 0.3,
+  },
+  countBadgeMine: {
+    color: COLORS.kiss,
+  },
+  countBadgeTheirs: {
+    color: COLORS.text,
   },
   info: {
     flexShrink: 1,

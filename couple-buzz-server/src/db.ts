@@ -38,6 +38,13 @@ export interface User {
   timezone: string;
   partner_timezone: string;
   partner_remark: string;
+  // v1.2.20 — per-user custom title for the 废话区 header (long-press the
+  // title to edit). Empty string means "use the default", which the
+  // client renders as '香宝聚集地 💕'. Storing '' keeps the default
+  // literal in client code so it can be tweaked without DB writes,
+  // and so legacy rows backfilled to '' get the same UX as a brand-
+  // new user.
+  history_title: string;
   last_read_action_id: number;
   // Marker advanced when the user opens the 发件箱 (OutboxScreen). Any
   // pending letter with created_at > this value is considered "fresh"
@@ -310,7 +317,7 @@ export interface DbOps {
   // pair_ids for logging / observability.
   couplesCleanupExpired(): string[];
   updatePairCode(userId: string, pairCode: string): void;
-  updateProfile(userId: string, name: string, timezone: string, partnerTimezone: string, partnerRemark: string): void;
+  updateProfile(userId: string, name: string, timezone: string, partnerTimezone: string, partnerRemark: string, historyTitle: string): void;
   setDeviceToken(userId: string, token: string): void;
   clearDeviceToken(userId: string): void;
   clearDeviceTokenByValue(token: string): void;
@@ -889,6 +896,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
       partner_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
       partner_remark TEXT NOT NULL DEFAULT '',
+      history_title TEXT NOT NULL DEFAULT '',
       last_read_action_id INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (partner_id) REFERENCES users(id)
@@ -1165,6 +1173,11 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   }
   if (!userCols.some((c) => c.name === 'partner_remark')) {
     db.exec("ALTER TABLE users ADD COLUMN partner_remark TEXT NOT NULL DEFAULT ''");
+  }
+  // v1.2.20 — custom 废话区 title. Empty default = client falls back
+  // to '香宝聚集地 💕'.
+  if (!userCols.some((c) => c.name === 'history_title')) {
+    db.exec("ALTER TABLE users ADD COLUMN history_title TEXT NOT NULL DEFAULT ''");
   }
   if (!userCols.some((c) => c.name === 'last_read_action_id')) {
     db.exec('ALTER TABLE users ADD COLUMN last_read_action_id INTEGER NOT NULL DEFAULT 0');
@@ -1585,7 +1598,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const updatePartner = db.prepare('UPDATE users SET partner_id = ? WHERE id = ?');
   const clearPartner = db.prepare('UPDATE users SET partner_id = NULL WHERE id = ?');
   const stmtUpdatePairCode = db.prepare('UPDATE users SET pair_code = ? WHERE id = ?');
-  const stmtUpdateProfile = db.prepare('UPDATE users SET name = ?, timezone = ?, partner_timezone = ?, partner_remark = ? WHERE id = ?');
+  const stmtUpdateProfile = db.prepare('UPDATE users SET name = ?, timezone = ?, partner_timezone = ?, partner_remark = ?, history_title = ? WHERE id = ?');
   // Stored in SQLite-default datetime format so lex comparison against
   // `created_at` (also stored in that format) works without any conversion.
   const stmtSetOutboxSeen = db.prepare('UPDATE users SET outbox_last_seen = ? WHERE id = ?');
@@ -2494,8 +2507,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       stmtUpdatePairCode.run(pairCode, userId);
     },
 
-    updateProfile(userId: string, name: string, timezone: string, partnerTimezone: string, partnerRemark: string): void {
-      stmtUpdateProfile.run(name, timezone, partnerTimezone, partnerRemark, userId);
+    updateProfile(userId: string, name: string, timezone: string, partnerTimezone: string, partnerRemark: string, historyTitle: string): void {
+      stmtUpdateProfile.run(name, timezone, partnerTimezone, partnerRemark, historyTitle, userId);
     },
 
     setDeviceToken(userId: string, token: string): void {

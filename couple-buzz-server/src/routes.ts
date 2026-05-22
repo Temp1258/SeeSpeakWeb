@@ -29,6 +29,10 @@ export type { SendPushFn };
 // grow unbounded would blow APNs' 4KB payload cap and silently kill pushes.
 const NAME_MAX = 20;
 const REMARK_MAX = 30;
+// v1.2.20 — per-user 废话区 header title cap. 30 codepoints is generous
+// enough for a sentence-style label ("我俩的小天地" / "毛绒绒の梦工厂"
+// etc.) without letting it blow up the header layout.
+const HISTORY_TITLE_MAX = 30;
 const DATE_TITLE_MAX = 50;
 
 // Whitelist of action types a client is allowed to send via POST /action and
@@ -564,17 +568,26 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
         timezone: user.timezone,
         partner_timezone: user.partner_timezone,
         partner_remark: user.partner_remark,
+        history_title: user.history_title,
         streak,
       });
     }
 
-    res.json({ paired: false, name: user.name, timezone: user.timezone, partner_timezone: user.partner_timezone, partner_remark: user.partner_remark, streak: 0 });
+    res.json({
+      paired: false,
+      name: user.name,
+      timezone: user.timezone,
+      partner_timezone: user.partner_timezone,
+      partner_remark: user.partner_remark,
+      history_title: user.history_title,
+      streak: 0,
+    });
   });
 
   // PUT /api/profile — update name and/or timezone
   router.put('/profile', (req: Request, res: Response) => {
     const userId = req.userId!;
-    const { name, timezone, partner_timezone, partner_remark } = req.body;
+    const { name, timezone, partner_timezone, partner_remark, history_title } = req.body;
 
     const user = dbOps.getUser(userId);
     if (!user) {
@@ -593,14 +606,31 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       // content past the visible cap.
       if (partner_remark.trim().length > REMARK_MAX) return res.status(400).json({ error: `partner_remark max ${REMARK_MAX} characters` });
     }
+    if (history_title !== undefined) {
+      if (typeof history_title !== 'string') return res.status(400).json({ error: 'history_title must be a string' });
+      // Same trim-for-check semantic as partner_remark — whitespace-only
+      // clears the title back to "use default", pasted text with leading/
+      // trailing space doesn't push the visible content past the cap.
+      if (history_title.trim().length > HISTORY_TITLE_MAX) {
+        return res.status(400).json({ error: `history_title max ${HISTORY_TITLE_MAX} characters` });
+      }
+    }
 
     const newName = (name && typeof name === 'string' && name.trim()) ? name.trim() : user.name;
     const newTimezone = (timezone && typeof timezone === 'string' && isValidTimezone(timezone)) ? timezone : user.timezone;
     const newPartnerTz = (partner_timezone && typeof partner_timezone === 'string' && isValidTimezone(partner_timezone)) ? partner_timezone : user.partner_timezone;
     const newRemark = (typeof partner_remark === 'string') ? partner_remark.trim() : user.partner_remark;
+    const newHistoryTitle = (typeof history_title === 'string') ? history_title.trim() : user.history_title;
 
-    dbOps.updateProfile(userId, newName, newTimezone, newPartnerTz, newRemark);
-    res.json({ success: true, name: newName, timezone: newTimezone, partner_timezone: newPartnerTz, partner_remark: newRemark });
+    dbOps.updateProfile(userId, newName, newTimezone, newPartnerTz, newRemark, newHistoryTitle);
+    res.json({
+      success: true,
+      name: newName,
+      timezone: newTimezone,
+      partner_timezone: newPartnerTz,
+      partner_remark: newRemark,
+      history_title: newHistoryTitle,
+    });
   });
 
   // POST /api/pair — connect with partner using their user ID

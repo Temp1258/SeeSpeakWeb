@@ -64,9 +64,69 @@ const TIMEZONE_LABELS: Record<string, string> = {
 // action in 废话区 — keyed off id=-1 so SectionList's keyExtractor stays
 // happy and renderItem can branch on the marker.
 type DividerItem = { id: -1; _divider: true };
-type ListItem = HistoryAction | DividerItem;
+// v1.2.20 — same-emoji-same-sender bursts within 5 min collapse into a
+// single bubble with a ×NN badge. The "leader" (first member) keeps its
+// id as the React key so the bubble doesn't re-mount when more emoji
+// join the burst — that's required for ActionRecord's count-bump
+// animation to play smoothly. displayCreatedAt rolls forward to the
+// latest member's timestamp (the bubble shows "ta sent this most
+// recently at ..."), and latestId surfaces the newest member's id for
+// the unread-divider boundary check.
+type GroupedAction = HistoryAction & {
+  count?: number;
+  displayCreatedAt?: string;
+  latestId?: number;
+};
+type ListItem = GroupedAction | DividerItem;
 const isDivider = (item: ListItem): item is DividerItem =>
   (item as DividerItem)._divider === true;
+
+// "Burst" = consecutive run of same (user_id, action_type) where each
+// member's created_at is within BURST_WINDOW_MS of the PREVIOUS member.
+// Rolling window — a sustained barrage keeps merging as long as no
+// 5-min gap interrupts it. Operates per Section (i.e. per local day in
+// the user's tz) so a same-emoji pair straddling midnight does not
+// silently merge across the day separator the user sees on screen.
+const BURST_WINDOW_MS = 5 * 60 * 1000;
+
+// v1.2.20 — fallback rendering when the user hasn't picked a custom
+// 废话区 title (history_title === '' on the server).
+const DEFAULT_HISTORY_TITLE = '香宝聚集地 💕';
+// Cap matches HISTORY_TITLE_MAX in routes.ts; doubled validation keeps
+// the iOS prompt's character UX consistent with what the server accepts.
+const HISTORY_TITLE_MAX_CHARS = 30;
+
+function collapseBursts(actions: HistoryAction[]): GroupedAction[] {
+  const out: GroupedAction[] = [];
+  for (const action of actions) {
+    const t = new Date(normalizeIso(action.created_at)).getTime();
+    const last = out[out.length - 1];
+    const lastT = last
+      ? new Date(normalizeIso(last.displayCreatedAt ?? last.created_at)).getTime()
+      : 0;
+    if (
+      last &&
+      last.user_id === action.user_id &&
+      last.action_type === action.action_type &&
+      t - lastT <= BURST_WINDOW_MS
+    ) {
+      last.count = (last.count ?? 1) + 1;
+      last.displayCreatedAt = action.created_at;
+      last.latestId = action.id;
+    } else {
+      // Even singletons get count/displayCreatedAt/latestId set so the
+      // renderer and unread-divider code don't have to special-case
+      // ungrouped items.
+      out.push({
+        ...action,
+        count: 1,
+        displayCreatedAt: action.created_at,
+        latestId: action.id,
+      });
+    }
+  }
+  return out;
+}
 
 interface Section {
   title: string;
@@ -128,9 +188,14 @@ function formatTimeInZone(dateStr: string, timezone: string): string {
 // App.tsx so a Settings-app timezone change still surfaces.
 
 // Insert the unread-divider into the section that contains the first PARTNER
-// action with id > boundaryId. Self-sent messages don't count as "unread" —
-// they're visible in the recipient's feed but the recipient never had to be
-// notified about them. Sections are oldest-first.
+// action (or BURST) with any id > boundaryId. Self-sent messages don't count
+// as "unread" — they're visible in the recipient's feed but the recipient
+// never had to be notified about them. Sections are oldest-first.
+//
+// For burst-collapsed groups (v1.2.20), we compare against `latestId` (the
+// newest member's id) — any group that has even one fresh emoji should
+// surface BELOW the divider so the user notices, even if older members of
+// the same group sit ABOVE the boundary chronologically.
 function injectUnreadDivider(sections: Section[], boundaryId: number, myUserId: string): Section[] {
   if (boundaryId <= 0 || !myUserId) return sections;
   let inserted = false;
@@ -139,7 +204,9 @@ function injectUnreadDivider(sections: Section[], boundaryId: number, myUserId: 
     let insertIdx = -1;
     for (let i = 0; i < s.data.length; i++) {
       const it = s.data[i];
-      if (!isDivider(it) && it.id > boundaryId && it.user_id !== myUserId) {
+      if (isDivider(it)) continue;
+      const newestIdInItem = (it as GroupedAction).latestId ?? it.id;
+      if (newestIdInItem > boundaryId && it.user_id !== myUserId) {
         insertIdx = i;
         break;
       }
@@ -262,7 +329,14 @@ function groupByDate(actions: HistoryAction[], myTz: string): Section[] {
     groups[label].push(action);
   }
 
-  return Object.entries(groups).map(([title, data]) => ({ title, data }));
+  // Run burst collapse PER DAY so a barrage doesn't accidentally merge
+  // across the visible "今天 / 昨天" separator. Within each day the run
+  // is still bounded by BURST_WINDOW_MS, so distinct emoji sprees stay
+  // as distinct bubbles.
+  return Object.entries(groups).map(([title, data]) => ({
+    title,
+    data: collapseBursts(data),
+  }));
 }
 
 export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
@@ -274,6 +348,9 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const [myTz, setMyTz] = useState(getDeviceTimezone());
   const [partnerTz, setPartnerTz] = useState('Asia/Shanghai');
   const [partnerRemark, setPartnerRemark] = useState('');
+  // v1.2.20 — user-customizable 废话区 title (long-press to edit).
+  // Empty string falls back to DEFAULT_HISTORY_TITLE on render.
+  const [historyTitle, setHistoryTitle] = useState('');
   const [selectedItem, setSelectedItem] = useState<HistoryAction | null>(null);
   const [editingRemark, setEditingRemark] = useState('');
   const [savingRemark, setSavingRemark] = useState(false);
@@ -482,6 +559,8 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       if (savedTz) setMyTz(savedTz);
       if (savedPartnerTz) setPartnerTz(savedPartnerTz);
       setPartnerRemark(savedRemark || '');
+      const savedTitle = await storage.getHistoryTitle();
+      setHistoryTitle(savedTitle || '');
 
       const savedName = await storage.getUserName();
       setMyName(savedName || '');
@@ -612,6 +691,40 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
     }
   }, [myName, myTimezone, myPartnerTz, editingRemark]);
 
+  // v1.2.20 — long-press the 废话区 header title to rename it. Saves
+  // server-side via PUT /api/profile (history_title field). Empty
+  // input is normalised to '' (server-side trim), which the renderer
+  // falls back to '香宝聚集地 💕' for. Account-scoped, persists across
+  // logout / reinstall (server is the source of truth; storage cache
+  // re-hydrates on next bootstrap getStatus).
+  const promptEditHistoryTitle = useCallback(() => {
+    Alert.prompt(
+      '修改废话区标题',
+      `最多 ${HISTORY_TITLE_MAX_CHARS} 个字符。留空恢复默认。`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '保存',
+          onPress: async (raw?: string) => {
+            const next = (raw ?? '').trim().slice(0, HISTORY_TITLE_MAX_CHARS);
+            if (next === historyTitle.trim()) return;
+            try {
+              const result = await api.updateProfile(
+                myName, myTimezone, myPartnerTz, partnerRemark, next,
+              );
+              setHistoryTitle(result.history_title);
+              await storage.setHistoryTitle(result.history_title);
+            } catch (e: any) {
+              Alert.alert('', e?.message || '保存失败');
+            }
+          },
+        },
+      ],
+      'plain-text',
+      historyTitle,
+    );
+  }, [historyTitle, myName, myTimezone, myPartnerTz, partnerRemark]);
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -632,7 +745,13 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         style={[styles.header, { paddingTop: insets.top + 12 }]}
         onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}
       >
-        <Text style={styles.headerTitle}>香宝聚集地 💕</Text>
+        <Text
+          style={styles.headerTitle}
+          onLongPress={promptEditHistoryTitle}
+          suppressHighlighting
+        >
+          {(historyTitle && historyTitle.trim()) || DEFAULT_HISTORY_TITLE}
+        </Text>
         <Text style={styles.headerSubtitle}>与 {partnerName} 已连接</Text>
       </View>
 
@@ -651,8 +770,12 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
             );
           }
           const isMine = item.user_id === myUserId;
-          const myTime = formatTimeInZone(item.created_at, myTz);
-          const pTime = !isMine ? formatTimeInZone(item.created_at, partnerTz) : undefined;
+          // For burst-collapsed groups (v1.2.20), show the LATEST member's
+          // wall-clock time — "ta sent this most recently at HH:MM".
+          // Falls back to created_at for legacy / singleton items.
+          const stamp = (item as GroupedAction).displayCreatedAt ?? item.created_at;
+          const myTime = formatTimeInZone(stamp, myTz);
+          const pTime = !isMine ? formatTimeInZone(stamp, partnerTz) : undefined;
           return (
             <ActionRecord
               userName={item.user_name}
@@ -664,6 +787,7 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
               reactions={reactions[item.id]}
               onPress={() => handleItemPress(item)}
               animateOnMount={initialRenderDoneRef.current}
+              count={(item as GroupedAction).count}
             />
           );
         }}

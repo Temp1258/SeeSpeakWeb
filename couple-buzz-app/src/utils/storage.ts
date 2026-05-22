@@ -10,6 +10,10 @@ const KEYS = {
   TIMEZONE: 'couple_buzz_timezone',
   PARTNER_TIMEZONE: 'couple_buzz_partner_timezone',
   PARTNER_REMARK: 'couple_buzz_partner_remark',
+  // v1.2.20 — user's custom 废话区 title. Account-scoped (lives inside
+  // KEYS so clearAll() wipes it on logout — another account on the
+  // same device must not inherit the previous user's title).
+  HISTORY_TITLE: 'couple_buzz_history_title',
 };
 
 // Pre-Step 4 keys that are now server-stored. Kept here only so
@@ -130,6 +134,17 @@ export const storage = {
 
   async setPartnerId(id: string): Promise<void> {
     await AsyncStorage.setItem(KEYS.PARTNER_ID, id);
+  },
+
+  async getHistoryTitle(): Promise<string | null> {
+    return safeGet(KEYS.HISTORY_TITLE);
+  },
+
+  async setHistoryTitle(title: string): Promise<void> {
+    // Stored as-is (incl. empty string) so the HistoryScreen can
+    // distinguish "user explicitly cleared to default" (empty cached)
+    // vs "never loaded" (null cached, falls back to default anyway).
+    await AsyncStorage.setItem(KEYS.HISTORY_TITLE, title);
   },
 
   async clearAll(): Promise<void> {

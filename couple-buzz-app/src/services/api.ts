@@ -240,6 +240,9 @@ export interface StatusResponse {
   timezone: string;
   partner_timezone: string;
   partner_remark: string;
+  // v1.2.20 — user's custom 废话区 title. Empty string '' means
+  // "use the default" (rendered client-side as '香宝聚集地 💕').
+  history_title: string;
   streak: number;
 }
 
@@ -253,6 +256,7 @@ export interface ProfileResponse {
   timezone: string;
   partner_timezone: string;
   partner_remark: string;
+  history_title: string;
 }
 
 export interface HistoryAction {
@@ -615,10 +619,25 @@ export const api = {
     return request('/api/badge-ack', { method: 'POST' });
   },
 
-  updateProfile(name: string, timezone: string, partnerTimezone: string, partnerRemark: string): Promise<ProfileResponse> {
+  updateProfile(
+    name: string,
+    timezone: string,
+    partnerTimezone: string,
+    partnerRemark: string,
+    historyTitle?: string,
+  ): Promise<ProfileResponse> {
     return request('/api/profile', {
       method: 'PUT',
-      body: JSON.stringify({ name, timezone, partner_timezone: partnerTimezone, partner_remark: partnerRemark }),
+      body: JSON.stringify({
+        name,
+        timezone,
+        partner_timezone: partnerTimezone,
+        partner_remark: partnerRemark,
+        // history_title is optional so existing callers (SettingsScreen)
+        // don't have to change. Server treats undefined as "leave it
+        // alone" and keeps the user's stored value.
+        ...(historyTitle !== undefined ? { history_title: historyTitle } : {}),
+      }),
     });
   },
 

@@ -406,6 +406,10 @@ export default function App() {
         if (status.timezone) await storage.setTimezone(status.timezone);
         if (status.partner_timezone) await storage.setPartnerTimezone(status.partner_timezone);
         if (status.partner_remark) await storage.setPartnerRemark(status.partner_remark);
+        // v1.2.20 — sync custom 废话区 title. Stored even when empty
+        // ('user wants the default') so the next screen can tell apart
+        // "never loaded" (null) vs "explicitly default" ('').
+        if (status.history_title !== undefined) await storage.setHistoryTitle(status.history_title);
         if (status.paired && status.partner_name) {
           await storage.setPartnerName(status.partner_name);
           setPartnerName(status.partner_name);
@@ -490,6 +494,10 @@ export default function App() {
         if (status.timezone) await storage.setTimezone(status.timezone);
         if (status.partner_timezone) await storage.setPartnerTimezone(status.partner_timezone);
         if (status.partner_remark) await storage.setPartnerRemark(status.partner_remark);
+        // v1.2.20 — sync custom 废话区 title. Stored even when empty
+        // ('user wants the default') so the next screen can tell apart
+        // "never loaded" (null) vs "explicitly default" ('').
+        if (status.history_title !== undefined) await storage.setHistoryTitle(status.history_title);
         if (status.paired && status.partner_name) {
           await storage.setPartnerName(status.partner_name);
           setPartnerName(status.partner_name);
@@ -812,6 +820,10 @@ export default function App() {
         if (status.timezone) await storage.setTimezone(status.timezone);
         if (status.partner_timezone) await storage.setPartnerTimezone(status.partner_timezone);
         if (status.partner_remark) await storage.setPartnerRemark(status.partner_remark);
+        // v1.2.20 — sync custom 废话区 title. Stored even when empty
+        // ('user wants the default') so the next screen can tell apart
+        // "never loaded" (null) vs "explicitly default" ('').
+        if (status.history_title !== undefined) await storage.setHistoryTitle(status.history_title);
       }).catch(() => {});
       setPartnerName(result.partner_name);
       setAppState('ready');
