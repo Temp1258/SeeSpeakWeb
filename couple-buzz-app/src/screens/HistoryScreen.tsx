@@ -341,9 +341,17 @@ function groupByDate(actions: HistoryAction[], myTz: string): Section[] {
 
 export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const insets = useSafeAreaInsets();
-  const [sections, setSections] = useState<Section[]>([]);
+  // v1.3.1 — pagination refactor: state of truth is the flat `rawActions`
+  // array (id-merged across loadHistory / loadOlder / poll / socket).
+  // `sections` is derived per render via groupByDate, which in turn
+  // applies the v1.2.20 burst collapse per day. Keeping the source flat
+  // lets us prepend older pages without disturbing the existing burst-
+  // collapse / unread-divider machinery.
+  const [rawActions, setRawActions] = useState<HistoryAction[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [myUserId, setMyUserId] = useState('');
   const [myTz, setMyTz] = useState(getDeviceTimezone());
   const [partnerTz, setPartnerTz] = useState('Asia/Shanghai');
@@ -358,6 +366,15 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const onLatestSeenRef = useRef(onLatestSeen);
   onLatestSeenRef.current = onLatestSeen;
   const prevLatestIdRef = useRef(0);
+  // v1.3.1 — pagination refs that the onScroll closure reads without
+  // re-binding on every render. earliestId is the cursor for loadOlder;
+  // loadingOlderRef gates concurrent triggers; isAtBottomRef gates the
+  // auto-scroll-to-bottom-on-new-message logic (set by onScroll based
+  // on layout).
+  const earliestIdRef = useRef(0);
+  const latestIdRef = useRef(0);
+  const loadingOlderRef = useRef(false);
+  const isAtBottomRef = useRef(true);
   const myUserIdRef = useRef('');
   // Mirror myTz state into a ref so the polling closure (re-created only
   // when its useFocusEffect deps change) can always read the latest value
@@ -372,6 +389,16 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   // so the unread divider stays put even as poll updates land. Cleared by
   // useFocusEffect on each refocus → fresh divider per viewing session.
   const [boundaryId, setBoundaryId] = useState(0);
+
+  // v1.3.1 — sections are derived from rawActions on every render
+  // (cheap O(n) bucket + collapseBursts). Keeping the source flat
+  // simplifies pagination merges; the rest of the rendering pipeline
+  // (sticky-day headers, burst collapse, unread divider) stays the same.
+  const sections = useMemo(
+    () => groupByDate(rawActions, myTz),
+    [rawActions, myTz],
+  );
+
   // Gate the per-bubble entry animation: false during the very first
   // populated render (so existing history doesn't all bounce in), true after
   // — only freshly-mounted bubbles (live arrivals) play the spring.
@@ -540,12 +567,51 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
     })
   ).current;
 
-  const scrollToBottom = useCallback(() => {
-    if (sections.length === 0) return;
-    setTimeout(() => {
-      (listRef.current as any)?.getScrollResponder?.()?.scrollToEnd?.({ animated: false });
-    }, 100);
-  }, [sections]);
+  // v1.3.1 — id-keyed merge so each load* path (initial / refresh /
+  // poll / socket / loadOlder) extends the set instead of replacing
+  // it. Sorting by created_at puts the merged list in ASC order so the
+  // bottom of the list is the newest message (matches the existing
+  // initial-scroll-to-bottom behaviour).
+  const mergeRaw = useCallback((incoming: HistoryAction[]) => {
+    if (incoming.length === 0) return;
+    setRawActions((prev) => {
+      const map = new Map<number, HistoryAction>();
+      for (const a of prev) map.set(a.id, a);
+      for (const a of incoming) map.set(a.id, a);
+      const sorted = Array.from(map.values()).sort((a, b) => {
+        if (a.created_at < b.created_at) return -1;
+        if (a.created_at > b.created_at) return 1;
+        return a.id - b.id;
+      });
+      // Bail if nothing actually changed (quiet 30s poll cycle, or a
+      // socket event that we'd already merged). Avoids needless
+      // re-renders through the entire SectionList tree.
+      if (sorted.length === prev.length) {
+        let same = true;
+        for (let i = 0; i < sorted.length; i++) {
+          if (sorted[i].id !== prev[i].id) { same = false; break; }
+        }
+        if (same) return prev;
+      }
+      if (sorted.length > 0) {
+        earliestIdRef.current = sorted[0].id;
+        latestIdRef.current = sorted[sorted.length - 1].id;
+      }
+      return sorted;
+    });
+  }, []);
+
+  // Scroll-to-bottom gate (v1.3.1): only fire when the latest id grew
+  // AND the user was already pinned near the bottom. Prevents the
+  // "loadOlder prepended → user gets snapped to bottom" jump.
+  const onListContentSizeChange = useCallback(() => {
+    if (latestIdRef.current > prevLatestIdRef.current && isAtBottomRef.current) {
+      setTimeout(() => {
+        (listRef.current as any)?.getScrollResponder?.()?.scrollToEnd?.({ animated: false });
+      }, 50);
+    }
+    prevLatestIdRef.current = latestIdRef.current;
+  }, []);
 
   const loadHistory = useCallback(async (captureBoundary: boolean = false) => {
     try {
@@ -566,9 +632,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       setMyTimezone(savedTz || getDeviceTimezone());
       setMyPartnerTz(savedPartnerTz || 'Asia/Shanghai');
 
-      // Group with the just-loaded tz (state setMyTz above hasn't settled
-      // for this synchronous slice yet).
-      const tz = savedTz || getDeviceTimezone();
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
       // Capture BEFORE marking read so the divider sits where the user left
@@ -576,9 +639,12 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       if (captureBoundary) {
         setBoundaryId(result.last_read_action_id ?? 0);
       }
-      setSections(groupByDate(reversed, tz));
-      const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
-      prevLatestIdRef.current = latestId;
+      mergeRaw(reversed);
+      // Server's has_more==false ⇒ definitely no more older. Default
+      // true so initial open keeps the door open for loadOlder until
+      // the server confirms exhaustion.
+      setHasMore(result.has_more !== false);
+      const latestId = latestIdRef.current;
       if (latestId > 0) onLatestSeenRef.current?.(latestId);
     } catch (error) {
       console.warn('Failed to load history:', error);
@@ -586,7 +652,52 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [mergeRaw]);
+
+  // v1.3.1 — paginate backwards. Fires from onScroll when the user
+  // drags within ~80pt of the very top. Re-entrant guard via
+  // loadingOlderRef so a flicked scroll doesn't double-trigger.
+  const loadOlder = useCallback(async () => {
+    if (loadingOlderRef.current || !hasMore) return;
+    if (earliestIdRef.current <= 0) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    try {
+      const result = await api.getHistory(50, earliestIdRef.current);
+      if (!result.actions || result.actions.length === 0) {
+        setHasMore(false);
+        return;
+      }
+      const reversed = [...result.actions].reverse();
+      mergeRaw(reversed);
+      setHasMore(result.has_more !== false);
+    } catch {
+      // Silent — user can drag again to retry.
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
+  }, [hasMore, mergeRaw]);
+
+  const onListScroll = useCallback((e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    scrollYRef.current = contentOffset.y;
+    // 80pt slop matches "felt-like at bottom" for the auto-scroll
+    // decision in onListContentSizeChange.
+    isAtBottomRef.current =
+      contentOffset.y + layoutMeasurement.height >= contentSize.height - 80;
+    // Top-edge slop for pagination — wider than the bottom one because
+    // SectionList tends to report `contentOffset.y` slightly positive
+    // (≈ paddingTop) even at the very top of the list.
+    if (
+      contentOffset.y < 80 &&
+      hasMore &&
+      !loadingOlderRef.current &&
+      rawActions.length > 0
+    ) {
+      loadOlder();
+    }
+  }, [hasMore, rawActions.length, loadOlder]);
 
   useFocusEffect(
     useCallback(() => {
@@ -611,14 +722,12 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
           const result = await api.getHistory(100);
           if (stale) return;
           const reversed = [...result.actions].reverse();
-          const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
-          if (latestId !== prevLatestIdRef.current) {
-            // Polling intentionally does NOT re-capture boundary — it would
-            // cause the divider to jump as new messages arrive while viewing.
-            setSections(groupByDate(reversed, myTzRef.current));
-            prevLatestIdRef.current = latestId;
-            if (latestId > 0) onLatestSeenRef.current?.(latestId);
-          }
+          // Polling intentionally does NOT re-capture boundary — it would
+          // cause the divider to jump as new messages arrive while viewing.
+          // mergeRaw bails internally when there's nothing new, so the
+          // 30s cycle stays cheap on a quiet pair.
+          mergeRaw(reversed);
+          if (latestIdRef.current > 0) onLatestSeenRef.current?.(latestIdRef.current);
         } catch {}
       }, 30000);
       // Live arrival via socket → refresh immediately so the new bubble
@@ -639,7 +748,7 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         setPanelOpen(false);
         panY.setValue(PANEL_HIDDEN);
       };
-    }, [loadHistory, panY])
+    }, [loadHistory, panY, mergeRaw])
   );
 
   const onRefresh = useCallback(() => {
@@ -661,10 +770,8 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       }
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
-      setSections(groupByDate(reversed, myTzRef.current));
-      const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
-      prevLatestIdRef.current = latestId;
-      if (latestId > 0) onLatestSeenRef.current?.(latestId);
+      mergeRaw(reversed);
+      if (latestIdRef.current > 0) onLatestSeenRef.current?.(latestIdRef.current);
     } catch {}
   }, [dividerVisible, dividerHardHidden]);
 
@@ -755,7 +862,22 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         ref={listRef}
         sections={visibleSections}
         keyExtractor={(item) => isDivider(item) ? 'divider' : item.id.toString()}
-        onContentSizeChange={scrollToBottom}
+        onContentSizeChange={onListContentSizeChange}
+        onScroll={onListScroll}
+        scrollEventThrottle={32}
+        // v1.3.1 — keep the user's visible card stationary when older
+        // pages prepend. Without this, every loadOlder would yank the
+        // user back to whatever the new top is.
+        maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 0 }}
+        ListHeaderComponent={
+          loadingOlder ? (
+            <View style={styles.olderLoadingRow}>
+              <ActivityIndicator color={COLORS.kiss} size="small" />
+            </View>
+          ) : !hasMore && rawActions.length > 0 ? (
+            <Text style={styles.olderExhaustedHint}>已经是最早的一条了 ⏳</Text>
+          ) : null
+        }
         renderItem={({ item }) => {
           if (isDivider(item)) {
             return (
@@ -971,6 +1093,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: 8,
+  },
+  // v1.3.1 — pagination feedback strip at the top of the list.
+  olderLoadingRow: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  olderExhaustedHint: {
+    paddingVertical: 12,
+    textAlign: 'center',
+    fontSize: 11,
+    color: COLORS.textLight,
   },
   emptyText: {
     fontSize: 16,

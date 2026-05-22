@@ -6,8 +6,9 @@ import crypto, { randomInt } from 'crypto';
 import { DbOps } from './db';
 import { QUESTIONS } from './questions';
 import { createWsTicket, disconnectCouple, disconnectSession, emitToCouple, isUserOnline } from './socket';
-import { pushToUser } from './push';
+import { pushToUser, PUSH_MESSAGES } from './push';
 import type { SendPushFn } from './push';
+import { trackBurst } from './bursts';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -701,12 +702,37 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     dbOps.addAction(userId, pairId, action_type, timezone || user.timezone, user.name);
 
     const partner = dbOps.getUser(user.partner_id);
+    // v1.3.1 — track this action in the burst tracker BEFORE the
+    // online-skip check so the counter stays accurate across mixed
+    // online/offline runs (a previous online action raises the count;
+    // the next offline push reflects the total).
+    const burst = trackBurst(user.partner_id, userId, action_type);
     // Skip the APNs push if the partner is foregrounded — the socket
     // 'action_new' below already drives the haptic + red dot, so a banner
     // would be redundant noise. Push still fires when partner is offline.
     if (partner && !isUserOnline(partner.id)) {
       const unread = dbOps.getUnreadActionCount(partner.id, userId);
-      await pushToUser(dbOps, pushFn, partner.id, action_type, user.name, undefined, unread);
+      // v1.3.1 — when 2+ of the same emoji land within the 5-min
+      // burst window, render the body as "<template>  ×N" and pass
+      // a stable collapseId so iOS replaces the prior lock-screen
+      // entry instead of stacking. Matches the chat bubble's ×NN.
+      let bodyOverride: string | undefined;
+      if (burst.count > 1) {
+        const tmpl = PUSH_MESSAGES[action_type]?.body ?? '';
+        const base = tmpl.replace(/\{name\}/g, user.name);
+        bodyOverride = `${base} ×${burst.count}`;
+      }
+      await pushToUser(
+        dbOps,
+        pushFn,
+        partner.id,
+        action_type,
+        user.name,
+        undefined,
+        unread,
+        burst.collapseId,
+        bodyOverride,
+      );
     }
     emitToCouple(userId, user.partner_id, 'action_new', { from: userId, action_type });
 
@@ -731,13 +757,31 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // Solo users (no current partner) see an empty history — past
     // relationships' actions are no longer mixed in by default.
     if (!user.partner_id) {
-      return res.json({ actions: [], reactions: {}, last_read_action_id: user.last_read_action_id });
+      return res.json({ actions: [], reactions: {}, last_read_action_id: user.last_read_action_id, has_more: false });
     }
     const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
     if (!pairId) {
-      return res.json({ actions: [], reactions: {}, last_read_action_id: user.last_read_action_id });
+      return res.json({ actions: [], reactions: {}, last_read_action_id: user.last_read_action_id, has_more: false });
     }
-    const actions = dbOps.getHistory(pairId, Math.min(limit, 200));
+    const cappedLimit = Math.min(limit, 200);
+
+    // v1.3.1 — pagination cursor: when the client passes `before_id`,
+    // return the page strictly older than that id. Drives the
+    // "scroll to top to load more" behaviour in HistoryScreen.
+    const beforeIdRaw = req.query.before_id;
+    const beforeId = typeof beforeIdRaw === 'string' ? parseInt(beforeIdRaw, 10) : NaN;
+    const useCursor = Number.isFinite(beforeId) && beforeId > 0;
+
+    const actions = useCursor
+      ? dbOps.getHistoryBefore(pairId, beforeId, cappedLimit)
+      : dbOps.getHistory(pairId, cappedLimit);
+
+    // has_more heuristic: if we returned exactly `cappedLimit` rows,
+    // there's likely still more older content. Strictly less ⇒ floor.
+    // Occasional false positives (server hits limit but next page is
+    // empty) are harmless — client just sees one extra "no result"
+    // round trip and stops.
+    const has_more = actions.length === cappedLimit;
 
     // (v1.2.21) The legacy "reactions to history actions" feature was
     // removed — `actions` already filters `reply_to IS NULL` server-
@@ -749,7 +793,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // Send the read pointer alongside actions so the client can render the
     // unread/read divider exactly at where the user left off last session.
     // Read here is non-mutating — POST /api/mark-read advances it.
-    res.json({ actions, reactions: {}, last_read_action_id: user.last_read_action_id });
+    res.json({
+      actions,
+      reactions: {},
+      last_read_action_id: user.last_read_action_id,
+      has_more,
+    });
   });
 
   // POST /api/mark-read — client tells the server it has seen up to this

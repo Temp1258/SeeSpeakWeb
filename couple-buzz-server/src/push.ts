@@ -27,7 +27,9 @@ const INVALID_TOKEN_REASONS = new Set([
 
 let cleanupDbOps: DbOps | null = null;
 
-const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
+// Exported (v1.3.1) so the /api/action route can build a count-suffixed
+// bodyOverride for burst notifications without duplicating templates.
+export const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   miss: { title: '💕 想你', body: '{name} 在想你～' },
   finger_heart: { title: '🫰 比心', body: '{name} 给你比了个心' },
   love: { title: '❤️ 爱你', body: '{name} 说爱你！' },

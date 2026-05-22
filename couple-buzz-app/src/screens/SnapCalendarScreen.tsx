@@ -201,45 +201,54 @@ const SnapCalendarScreen = forwardRef<SnapCalendarHandle, Props>(({ visible, onC
             <ActivityIndicator color={COLORS.kiss} />
           </View>
         ) : (
-          <ScrollView
-            contentContainerStyle={[
-              styles.grid,
-              // Padding bottom keeps the last row clear of the 收起 pill.
-              { paddingBottom: insets.bottom + 80 },
-            ]}
-            showsVerticalScrollIndicator={false}
-          >
-            {grid.map((cell, idx) => {
-              if (!cell) {
-                return <View key={`pad-${idx}`} style={styles.cellEmpty} />;
-              }
-              const snap = byDate.get(cell.dateKey);
-              const hasAny = !!snap && (!!snap.my_photo || !!snap.partner_photo);
-              const isToday =
-                cell.dateKey ===
-                `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
-              return (
-                <TouchableOpacity
-                  key={cell.dateKey}
-                  activeOpacity={hasAny ? 0.7 : 1}
-                  onPress={() => onCellTap(snap)}
-                  style={[styles.cell, isToday && styles.cellToday]}
-                >
-                  {hasAny ? (
-                    <PolaroidThumb snap={snap!} dayLabel={cell.day} />
-                  ) : (
-                    <View style={styles.cellPlain}>
-                      <Text style={[styles.dayText, isToday && styles.dayTextToday]}>{cell.day}</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              );
-            })}
+          // v1.3.1 — Pressable around the scroll body lets a tap on any
+          // empty area (gap between cells, padding around the grid,
+          // bottom slack) dismiss the modal — same convention as the
+          // Inbox listWrap Pressable. Scroll gestures still belong to
+          // the ScrollView (RN GestureResponder prioritises drag), and
+          // tap on a cell is consumed by the cell's TouchableOpacity
+          // before reaching here.
+          <Pressable style={styles.gridArea} onPress={onClose}>
+            <ScrollView
+              contentContainerStyle={[
+                styles.grid,
+                // Padding bottom keeps the last row clear of the 收起 pill.
+                { paddingBottom: insets.bottom + 80 },
+              ]}
+              showsVerticalScrollIndicator={false}
+            >
+              {grid.map((cell, idx) => {
+                if (!cell) {
+                  return <View key={`pad-${idx}`} style={styles.cellEmpty} />;
+                }
+                const snap = byDate.get(cell.dateKey);
+                const hasAny = !!snap && (!!snap.my_photo || !!snap.partner_photo);
+                const isToday =
+                  cell.dateKey ===
+                  `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+                return (
+                  <TouchableOpacity
+                    key={cell.dateKey}
+                    activeOpacity={hasAny ? 0.7 : 1}
+                    onPress={() => onCellTap(snap)}
+                    style={[styles.cell, isToday && styles.cellToday]}
+                  >
+                    {hasAny ? (
+                      <PolaroidThumb snap={snap!} dayLabel={cell.day} />
+                    ) : (
+                      <View style={styles.cellPlain}>
+                        <Text style={[styles.dayText, isToday && styles.dayTextToday]}>{cell.day}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
 
-            {snaps.length === 0 && !loading && (
-              <Text style={styles.emptyHint}>这个月还没有快照～</Text>
-            )}
-          </ScrollView>
+              {snaps.length === 0 && !loading && (
+                <Text style={styles.emptyHint}>这个月还没有快照～</Text>
+              )}
+            </ScrollView>
+          </Pressable>
         )}
 
         {/* Title-edge soft fade — mirrors InboxScreen so cards sliding up
@@ -385,6 +394,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: COLORS.textLight,
+  },
+  // v1.3.1 — Pressable that wraps the scrollable grid; tap-on-empty
+  // closes the modal (cells consume their own onPress, scroll gestures
+  // belong to the inner ScrollView).
+  gridArea: {
+    flex: 1,
   },
   grid: {
     flexDirection: 'row',

@@ -363,6 +363,10 @@ export interface DbOps {
   // legacy reaction rows (left over from the v1.2.20-and-earlier
   // long-press-to-react feature, removed in v1.2.21) are invisible.
   getHistory(pairId: string, limit: number): Action[];
+  // v1.3.1 pagination cursor — returns the `limit` newest actions
+  // whose id is strictly less than `beforeId`. Used by the client's
+  // scroll-to-top "load older" flow.
+  getHistoryBefore(pairId: string, beforeId: number, limit: number): Action[];
   // Issue a brand-new session at register/login time. Returns the
   // generated session_id and whether this session was made primary
   // (true iff the user had no other primary at the moment of insert —
@@ -1741,6 +1745,21 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     ORDER BY a.created_at DESC, a.id DESC
     LIMIT ?
   `);
+  // v1.3.1 — pagination cursor variant. Drives the "scroll up to load
+  // older messages" flow in HistoryScreen. Same shape as getHistoryStmt
+  // plus an `a.id < ?` filter to fetch the page strictly older than
+  // the smallest id currently visible on the client.
+  const getHistoryBeforeStmt = db.prepare(`
+    SELECT a.id, a.user_id, a.action_type, a.sender_timezone, a.reply_to, a.created_at,
+           CASE WHEN a.sender_name != '' THEN a.sender_name ELSE u.name END AS user_name
+    FROM actions a
+    JOIN users u ON a.user_id = u.id
+    WHERE a.pair_id = ?
+      AND a.reply_to IS NULL
+      AND a.id < ?
+    ORDER BY a.created_at DESC, a.id DESC
+    LIMIT ?
+  `);
   const stmtGetAction = db.prepare(`
     SELECT a.id, a.user_id, a.action_type, a.sender_timezone, a.reply_to, a.created_at,
            CASE WHEN a.sender_name != '' THEN a.sender_name ELSE u.name END AS user_name
@@ -2567,6 +2586,10 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     getHistory(pairId: string, limit: number): Action[] {
       return getHistoryStmt.all(pairId, limit) as Action[];
+    },
+
+    getHistoryBefore(pairId: string, beforeId: number, limit: number): Action[] {
+      return getHistoryBeforeStmt.all(pairId, beforeId, limit) as Action[];
     },
 
     insertRefreshToken(userId, tokenHash, expiresAt, sessionId, deviceInfo, isPrimary): void {

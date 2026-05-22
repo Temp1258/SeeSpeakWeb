@@ -278,6 +278,10 @@ export interface HistoryResponse {
   // here but no UI reads from it.
   reactions?: Record<number, HistoryAction[]>;
   last_read_action_id?: number;
+  // v1.3.1 — pagination flag. `true` when the server hit the limit
+  // and there might still be older messages. Drives whether
+  // HistoryScreen keeps watching for scroll-to-top to fire loadOlder.
+  has_more?: boolean;
 }
 
 export interface WsTicketResponse {
@@ -582,8 +586,14 @@ export const api = {
     });
   },
 
-  getHistory(limit = 50): Promise<HistoryResponse> {
-    return request(`/api/history?limit=${limit}`);
+  // v1.3.1 — `beforeId` makes this the cursor for the scroll-to-top
+  // "load older messages" flow in HistoryScreen. When provided, the
+  // server returns actions with id strictly less than the cursor. When
+  // omitted, the server returns the latest `limit` actions (original
+  // behaviour). Pagination is opt-in per call.
+  getHistory(limit = 50, beforeId?: number): Promise<HistoryResponse> {
+    const cursor = beforeId && beforeId > 0 ? `&before_id=${beforeId}` : '';
+    return request(`/api/history?limit=${limit}${cursor}`);
   },
 
   markRead(lastId: number): Promise<{ success: boolean; unread: number }> {
