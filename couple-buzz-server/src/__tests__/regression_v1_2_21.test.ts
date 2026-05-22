@@ -280,6 +280,120 @@ describe('A3 — GET /api/snaps?month= still serves the calendar data', () => {
       .set('Authorization', `Bearer ${alice.access_token}`);
     expect(bad.status).toBe(400);
   });
+
+  // ── Anti-peek — exhaustive scenarios from BOTH sides ─────────────────
+  // The reveal rule: a day's photo URLs are only delivered when the
+  // caller has ALSO snapped that same day. So:
+  //   only ta snapped → I see nothing (anti-peek); ta sees own only
+  //   only I snapped  → ta sees nothing; I see own only
+  //   both snapped     → both see both
+  // Below tests verify each case from BOTH sides (server is the source
+  // of truth for visibility, not the client).
+
+  it('anti-peek: only ta snapped — I see nothing, ta sees ta`s own', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const date = '2026-05-15';
+    // Bob (= "ta" from Alice's POV) snaps.
+    dbOps.saveSnapAtomic(bob.user_id, alice.user_id, date, `${bob.user_id}/${date}.jpg`);
+
+    const aliceView = await request(app)
+      .get('/api/snaps?month=2026-05')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(aliceView.body.snaps).toHaveLength(1);
+    expect(aliceView.body.snaps[0].date).toBe(date);
+    expect(aliceView.body.snaps[0].both_snapped).toBe(false);
+    expect(aliceView.body.snaps[0].my_photo).toBeNull(); // Alice didn't snap
+    expect(aliceView.body.snaps[0].partner_photo).toBeNull(); // anti-peek
+
+    const bobView = await request(app)
+      .get('/api/snaps?month=2026-05')
+      .set('Authorization', `Bearer ${bob.access_token}`);
+    expect(bobView.body.snaps).toHaveLength(1);
+    expect(bobView.body.snaps[0].both_snapped).toBe(false);
+    expect(bobView.body.snaps[0].my_photo).toBeTruthy(); // Bob sees his own
+    expect(bobView.body.snaps[0].partner_photo).toBeNull(); // Alice hasn't snapped yet
+  });
+
+  it('anti-peek: only I snapped — ta sees nothing, I see my own', async () => {
+    // Mirror case of the previous test, from the opposite POV.
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const date = '2026-05-20';
+    dbOps.saveSnapAtomic(alice.user_id, bob.user_id, date, `${alice.user_id}/${date}.jpg`);
+
+    const bobView = await request(app)
+      .get('/api/snaps?month=2026-05')
+      .set('Authorization', `Bearer ${bob.access_token}`);
+    expect(bobView.body.snaps).toHaveLength(1);
+    expect(bobView.body.snaps[0].both_snapped).toBe(false);
+    expect(bobView.body.snaps[0].my_photo).toBeNull();
+    expect(bobView.body.snaps[0].partner_photo).toBeNull(); // anti-peek
+
+    const aliceView = await request(app)
+      .get('/api/snaps?month=2026-05')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    expect(aliceView.body.snaps).toHaveLength(1);
+    expect(aliceView.body.snaps[0].both_snapped).toBe(false);
+    expect(aliceView.body.snaps[0].my_photo).toBeTruthy();
+    expect(aliceView.body.snaps[0].partner_photo).toBeNull();
+  });
+
+  it('anti-peek: once both snap, both photos unlock for both partners', async () => {
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const date = '2026-05-21';
+    dbOps.saveSnapAtomic(bob.user_id, alice.user_id, date, `${bob.user_id}/${date}.jpg`);
+    dbOps.saveSnapAtomic(alice.user_id, bob.user_id, date, `${alice.user_id}/${date}.jpg`);
+
+    for (const who of [alice, bob]) {
+      const view = await request(app)
+        .get('/api/snaps?month=2026-05')
+        .set('Authorization', `Bearer ${who.access_token}`);
+      expect(view.body.snaps).toHaveLength(1);
+      expect(view.body.snaps[0].both_snapped).toBe(true);
+      expect(view.body.snaps[0].my_photo).toBeTruthy();
+      expect(view.body.snaps[0].partner_photo).toBeTruthy();
+    }
+  });
+
+  it('anti-peek is per-day: snapping ONE day does not retroactively unlock OTHER days', async () => {
+    // Subtle attack vector: if I snap on day X, do I unlock ta's day Y
+    // photos too? Answer must be NO — anti-peek is a per-day check.
+    // Build a month where ta snapped two days, I only snapped one of
+    // them. Only the "both" day should expose ta's photo.
+    const { app, dbOps } = createTestApp();
+    const { alice, bob } = await registerPairedUsers(app);
+    const dayOnlyBob = '2026-05-25';
+    const dayBoth = '2026-05-26';
+
+    dbOps.saveSnapAtomic(bob.user_id, alice.user_id, dayOnlyBob, `${bob.user_id}/${dayOnlyBob}.jpg`);
+    dbOps.saveSnapAtomic(bob.user_id, alice.user_id, dayBoth, `${bob.user_id}/${dayBoth}.jpg`);
+    dbOps.saveSnapAtomic(alice.user_id, bob.user_id, dayBoth, `${alice.user_id}/${dayBoth}.jpg`);
+
+    const aliceView = await request(app)
+      .get('/api/snaps?month=2026-05')
+      .set('Authorization', `Bearer ${alice.access_token}`);
+    type SnapRow = {
+      date: string;
+      my_photo: string | null;
+      partner_photo: string | null;
+      both_snapped: boolean;
+    };
+    const byDate = Object.fromEntries(
+      (aliceView.body.snaps as SnapRow[]).map((s) => [s.date, s]),
+    ) as Record<string, SnapRow>;
+
+    // Day Alice never snapped: must NOT leak Bob's photo.
+    expect(byDate[dayOnlyBob].both_snapped).toBe(false);
+    expect(byDate[dayOnlyBob].my_photo).toBeNull();
+    expect(byDate[dayOnlyBob].partner_photo).toBeNull();
+
+    // Day BOTH snapped: Bob's photo unlocked.
+    expect(byDate[dayBoth].both_snapped).toBe(true);
+    expect(byDate[dayBoth].my_photo).toBeTruthy();
+    expect(byDate[dayBoth].partner_photo).toBeTruthy();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────
