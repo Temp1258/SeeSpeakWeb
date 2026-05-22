@@ -397,6 +397,16 @@ export default function App() {
         // OutboxScreen, etc.) don't fall back to "我" for users who logged in
         // (vs registered) and never saved in Settings.
         if (status.name) await storage.setUserName(status.name);
+        // Cache both timezones so the very next screen (WriteLetterScreen
+        // double-tz preview, InboxScreen postmarks, MailboxScreen next-
+        // delivery hint, etc.) reads the server's source of truth instead
+        // of falling back to 'Asia/Shanghai'. Without this, a logged-in
+        // user who set partner_timezone = America/New_York in Settings
+        // on a different device would still see "ta 那边收到时" rendered
+        // in Beijing time until they manually visited Settings.
+        if (status.timezone) await storage.setTimezone(status.timezone);
+        if (status.partner_timezone) await storage.setPartnerTimezone(status.partner_timezone);
+        if (status.partner_remark) await storage.setPartnerRemark(status.partner_remark);
         if (status.paired && status.partner_name) {
           await storage.setPartnerName(status.partner_name);
           setPartnerName(status.partner_name);
@@ -440,6 +450,9 @@ export default function App() {
       try {
         const status = await api.getStatus();
         if (status.name) await storage.setUserName(status.name);
+        if (status.timezone) await storage.setTimezone(status.timezone);
+        if (status.partner_timezone) await storage.setPartnerTimezone(status.partner_timezone);
+        if (status.partner_remark) await storage.setPartnerRemark(status.partner_remark);
         if (status.paired && status.partner_name) {
           await storage.setPartnerName(status.partner_name);
           setPartnerName(status.partner_name);
@@ -511,10 +524,20 @@ export default function App() {
   // We deliberately do NOT advance the server's last_read pointer here —
   // that only happens when the user actually views HistoryScreen (see
   // handleLatestSeen). The next push will recompute badge from real unread.
+  //
+  // Also reset the SERVER-side transient push counter (see pushToUser /
+  // /api/badge-ack) so the +1-per-push sequence restarts from 0. Without
+  // this the counter would only grow, leaving the badge unboundedly high
+  // even after the user has clearly acknowledged the notifications by
+  // opening the app.
   useEffect(() => {
     Notifications.setBadgeCountAsync(0);
+    api.ackBadge().catch(() => {});
     const sub = RNAppState.addEventListener('change', (next) => {
-      if (next === 'active') Notifications.setBadgeCountAsync(0);
+      if (next === 'active') {
+        Notifications.setBadgeCountAsync(0);
+        api.ackBadge().catch(() => {});
+      }
     });
     return () => sub.remove();
   }, []);
@@ -741,6 +764,18 @@ export default function App() {
 
     if (result.partner_name) {
       await storage.setPartnerName(result.partner_name);
+      // Pull tz settings off the server immediately on fresh login so the
+      // very first screen the user lands on (WriteLetterScreen preview /
+      // InboxScreen postmark / MailboxScreen 下次送达 hint) already shows
+      // the correct double-tz instead of falling back to Asia/Shanghai.
+      // api.login doesn't include tz in its response by design; getStatus
+      // does. Fire-and-forget — login already succeeded, a transient fetch
+      // failure shouldn't block the ready transition.
+      api.getStatus().then(async (status) => {
+        if (status.timezone) await storage.setTimezone(status.timezone);
+        if (status.partner_timezone) await storage.setPartnerTimezone(status.partner_timezone);
+        if (status.partner_remark) await storage.setPartnerRemark(status.partner_remark);
+      }).catch(() => {});
       setPartnerName(result.partner_name);
       setAppState('ready');
       registerAndUpdateToken();

@@ -777,6 +777,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     const latest = user.partner_id ? dbOps.getLatestPartnerActionId(userId, user.partner_id) : 0;
     const clamped = Math.min(id, latest);
     dbOps.setLastReadActionId(userId, clamped);
+    // mark-read = the user explicitly acknowledged unread items. Reset
+    // the transient push counter too, so the next push starts at "+1
+    // from 0" instead of continuing the pre-ack sequence. Without this
+    // a user who just cleared history would still get the next ritual /
+    // date_new / weather push showing badge=4 instead of 1.
+    dbOps.clearUnackPushCount(userId);
     const unread = user.partner_id ? dbOps.getUnreadActionCount(userId, user.partner_id) : 0;
     res.json({ success: true, unread });
   });
@@ -1742,16 +1748,19 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // mailbox's "session reveal at scheduled time" semantic — recipient
     // never has to tap "open envelope" for the content to materialise.
     // Without this, capsules sit with opened_at=null forever (no client
-    // path calls POST /capsules/:id/open) and InboxScreen drops them. The
-    // SQL UPDATE has a `WHERE opened_at IS NULL` guard, so a concurrent
-    // request that already opened the row is harmless (changes=0).
+    // path calls POST /capsules/:id/open) and InboxScreen drops them.
+    //
+    // autoOpenCapsule writes opened_at = unlock_at (not CURRENT_TIMESTAMP)
+    // so the "收于" stamp reflects when the letter actually arrived and
+    // hasUnreadInboxItems doesn't immediately flag this capsule as a
+    // brand-new arrival the instant after the user opened the inbox.
     for (const c of dbOps.getCapsules(pairId)) {
       if (c.opened_at) continue;
       if (c.unlock_at > nowIso) continue;
       const isSelfRecipient = c.visibility === 'self' && c.user_id === userId;
       const isPartnerRecipient = c.visibility === 'partner' && c.user_id !== userId;
       if (!isSelfRecipient && !isPartnerRecipient) continue;
-      dbOps.openCapsule(c.id, pairId);
+      dbOps.autoOpenCapsule(c.id, pairId);
     }
 
     // 'self' capsules are private to the author. 'partner' (default) capsules
@@ -2564,6 +2573,17 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
       kind: 'deleted',
       sticky_id: id,
     });
+    res.json({ success: true });
+  });
+
+  // POST /api/badge-ack — client calls this when the app foregrounds
+  // (in parallel with setBadgeCountAsync(0)). Resets the transient
+  // push counter so the next push starts at "+1 from 0" rather than
+  // continuing to accumulate. See pushToUser in push.ts for the badge
+  // math that makes this counter the per-push +1 floor.
+  router.post('/badge-ack', (req: Request, res: Response) => {
+    const userId = req.userId!;
+    dbOps.clearUnackPushCount(userId);
     res.json({ success: true });
   });
 

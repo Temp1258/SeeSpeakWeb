@@ -241,12 +241,19 @@ export async function sendPush(
 // dead token can't stall the rest — same rationale as scheduler's
 // broadcastPush but at user granularity.
 //
-// When the caller doesn't pass `badge`, we fall back to the recipient's
-// real cross-feature unread total (with a floor of 1). APNs leaves the
-// icon badge unchanged when `aps.badge` is absent — so omitting it meant
-// the icon never went red for sticky/mailbox/daily/etc. pushes once the
-// client had cleared it on app activation. Always sending a value avoids
-// that silent dead-end.
+// Badge math (v1.2.18):
+//   1. Every push call increments `users.unack_push_count` by 1.
+//   2. final badge = max(callerBadge ?? totalCrossFeatureUnread, unack_push_count, 1)
+//   3. /api/badge-ack resets unack_push_count to 0 on app foreground.
+//
+// This guarantees every notification visibly bumps the iOS icon badge by
+// at least 1, including the categories that don't have their own unread
+// cursor (date_new / ritual_* / weather_* / urge_* / react_* / unpair /
+// weekly_report / mailbox_open / mailbox_countdown_15min / snap_* /
+// bucket_* / daily_*). The max() keeps the semantic count (real unread)
+// visible when it exceeds the transient counter — e.g. on first push
+// after foreground-clear we still surface "you actually have 5 unread"
+// instead of just "1".
 export async function pushToUser(
   dbOps: DbOps,
   pushFn: SendPushFn,
@@ -261,11 +268,18 @@ export async function pushToUser(
   const tokens = dbOps.getDeviceTokensForUser(userId);
   if (tokens.length === 0) return;
 
-  // Floor of 1: the act of firing a push means there's at least one thing
-  // for the recipient to see. Ensures categories without per-feature unread
-  // counters (unpair / weather / weekly_report / bucket_complete / date_new
-  // / mailbox_open) still light up the icon instead of going to a stale 0.
-  const finalBadge = badge ?? Math.max(1, dbOps.getTotalUnreadBadge(userId));
+  const transientCount = dbOps.incrementUnackPushCount(userId);
+  const semanticBadge = badge ?? dbOps.getTotalUnreadBadge(userId);
+  // max(semanticBadge, transientCount, 1):
+  //   - When semanticBadge grows in lockstep (history actions, sticky,
+  //     mailbox, capsule unlock), it already +1's per push and dominates.
+  //   - For other categories semanticBadge is flat, so transientCount
+  //     pumps the visible badge by +1 each push.
+  //   - Floor of 1 covers the corner case where both are 0 (e.g. first
+  //     push to a brand-new user with empty cursors — APNs aps.badge=0
+  //     would clear the badge, the opposite of what a fresh push should
+  //     do).
+  const finalBadge = Math.max(1, semanticBadge, transientCount);
 
   await Promise.allSettled(
     tokens.map((t) => {

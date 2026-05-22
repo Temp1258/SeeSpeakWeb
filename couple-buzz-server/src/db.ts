@@ -318,6 +318,17 @@ export interface DbOps {
   // array if the user has no devices registered (push permission denied
   // or app never opened post-install).
   getDeviceTokensForUser(userId: string): string[];
+  // Atomically increments `users.unack_push_count` and returns the new
+  // value. Called by pushToUser before computing the APNs badge so each
+  // push visibly bumps the icon badge ≥1, even for notification types
+  // that don't have a per-feature unread counter (date_new / ritual_* /
+  // weather_* / urge_* / react_* / unpair / weekly_report / mailbox_open /
+  // mailbox_countdown_15min / snap_* / bucket_* / daily_*).
+  incrementUnackPushCount(userId: string): number;
+  // Resets `users.unack_push_count` to 0. Client calls /api/badge-ack
+  // on app foreground / app-active so the next push starts the counter
+  // fresh.
+  clearUnackPushCount(userId: string): void;
   // Single-row lookup by apns_token. Used by the login flow to detect
   // "this is the same physical device coming back" — the APNs token
   // is the only stable device identifier we have (device_name / device_os
@@ -511,6 +522,12 @@ export interface DbOps {
   createCapsule(userId: string, partnerId: string, pairId: string, content: string, unlockDate: string, unlockAt: string, visibility: 'self' | 'partner'): TimeCapsule;
   getCapsules(pairId: string): TimeCapsule[];
   openCapsule(id: number, pairId: string): boolean;
+  // Auto-open variant used by the GET /capsules sweep — sets opened_at
+  // to the capsule's unlock_at instant (not CURRENT_TIMESTAMP). Keeps
+  // the "收于" semantic aligned with when the letter actually landed
+  // and avoids the inbox-last-seen race that would otherwise re-light
+  // the 信箱 tab dot right after the user opened the inbox.
+  autoOpenCapsule(id: number, pairId: string): boolean;
   // `nowIso` is the cutoff: any capsule with unlock_at <= nowIso, not yet
   // opened, and not yet notified is due for a push.
   getUnlockableCapsules(nowIso: string): TimeCapsule[];
@@ -1174,6 +1191,16 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   if (!userCols.some((c) => c.name === 'write_letter_draft')) {
     db.exec("ALTER TABLE users ADD COLUMN write_letter_draft TEXT NOT NULL DEFAULT ''");
   }
+  // v1.2.18: per-user transient push counter. Each pushToUser call
+  // increments this, and the iOS APNs `aps.badge` is computed with this
+  // value added on top so every notification visibly bumps the icon
+  // badge by ≥ 1, including categories that don't have their own
+  // unread cursor (date_new / weekly_report / weather_* / ritual_* /
+  // urge_* / react_* / etc.). Client calls /api/badge-ack on app
+  // foreground to reset it back to 0.
+  if (!userCols.some((c) => c.name === 'unack_push_count')) {
+    db.exec('ALTER TABLE users ADD COLUMN unack_push_count INTEGER NOT NULL DEFAULT 0');
+  }
 
   const actionCols = db.pragma('table_info(actions)') as { name: string }[];
   if (!actionCols.some((c) => c.name === 'sender_timezone')) {
@@ -1642,6 +1669,15 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   );
   const stmtGetDeviceTokensForUser = db.prepare(
     'SELECT apns_token FROM device_tokens WHERE user_id = ?'
+  );
+  // v1.2.18 — transient badge counter. INCREMENT bumps it and returns
+  // the new value in one round-trip via RETURNING (SQLite 3.35+, which
+  // better-sqlite3 has shipped for years).
+  const stmtIncrementUnackPushCount = db.prepare(
+    'UPDATE users SET unack_push_count = unack_push_count + 1 WHERE id = ? RETURNING unack_push_count'
+  );
+  const stmtClearUnackPushCount = db.prepare(
+    'UPDATE users SET unack_push_count = 0 WHERE id = ?'
   );
   const stmtGetDeviceTokenRow = db.prepare(
     'SELECT apns_token, user_id, session_id, updated_at FROM device_tokens WHERE apns_token = ?'
@@ -2115,6 +2151,20 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtOpenCapsule = db.prepare(
     'UPDATE time_capsules SET opened_at = CURRENT_TIMESTAMP WHERE id = ? AND pair_id = ? AND opened_at IS NULL'
   );
+  // Auto-open variant for the GET /api/capsules sweep: writes opened_at =
+  // unlock_at, NOT CURRENT_TIMESTAMP. The user didn't actually click
+  // anything — the system just surfaced the letter at its scheduled
+  // moment. Using unlock_at as the arrival timestamp keeps "收于" on
+  // the inbox card semantically aligned with when the letter actually
+  // landed (mirror of how mailbox letters use session reveal_at). It
+  // also avoids a subtle race where opened_at could be set AFTER the
+  // user's just-bumped inbox_last_seen marker — under CURRENT_TIMESTAMP
+  // that capsule would then appear "unread" on the very next polling
+  // tick and re-light the 信箱 tab red dot, even though the user just
+  // opened the inbox to view it.
+  const stmtAutoOpenCapsule = db.prepare(
+    'UPDATE time_capsules SET opened_at = unlock_at WHERE id = ? AND pair_id = ? AND opened_at IS NULL'
+  );
   const stmtUnlockableCapsules = db.prepare(
     'SELECT * FROM time_capsules WHERE unlock_at <= ? AND opened_at IS NULL AND notified_at IS NULL'
   );
@@ -2473,6 +2523,15 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     getDeviceTokensForUser(userId: string): string[] {
       const rows = stmtGetDeviceTokensForUser.all(userId) as { apns_token: string }[];
       return rows.map((r) => r.apns_token);
+    },
+
+    incrementUnackPushCount(userId: string): number {
+      const row = stmtIncrementUnackPushCount.get(userId) as { unack_push_count: number } | undefined;
+      return row?.unack_push_count ?? 0;
+    },
+
+    clearUnackPushCount(userId: string): void {
+      stmtClearUnackPushCount.run(userId);
     },
 
     getDeviceTokenRow(apnsToken: string) {
@@ -3020,6 +3079,13 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
 
     openCapsule(id: number, pairId: string): boolean {
       const result = stmtOpenCapsule.run(id, pairId);
+      return result.changes > 0;
+    },
+
+    autoOpenCapsule(id: number, pairId: string): boolean {
+      // Used by the GET /api/capsules sweep — see stmtAutoOpenCapsule
+      // for the rationale (opened_at = unlock_at not CURRENT_TIMESTAMP).
+      const result = stmtAutoOpenCapsule.run(id, pairId);
       return result.changes > 0;
     },
 

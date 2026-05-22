@@ -84,6 +84,14 @@ export default function SettingsScreen({ onSelfRevoked }: Props) {
       setOriginalPartnerTz(status.partner_timezone);
       setOriginalPartnerRemark(status.partner_remark || '');
       await storage.setPartnerRemark(status.partner_remark || '');
+      // Mirror tz settings into AsyncStorage so screens that read from
+      // storage (WriteLetterScreen, InboxScreen, MailboxScreen) pick up
+      // the latest server-side values on next focus. Without this, a tz
+      // change on another device that lands via getStatus here would
+      // never reach those screens until the user manually tapped a tz
+      // row (which is the only other call site that writes storage).
+      if (status.timezone) await storage.setTimezone(status.timezone);
+      if (status.partner_timezone) await storage.setPartnerTimezone(status.partner_timezone);
       if (status.partner_id) {
         setPartnerId(status.partner_id);
         await storage.setPartnerId(status.partner_id);

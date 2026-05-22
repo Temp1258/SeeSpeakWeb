@@ -607,6 +607,14 @@ export const api = {
     });
   },
 
+  // Reset the server-side transient push counter so the next push starts
+  // its +1 sequence from 0. Called on app foreground alongside the
+  // local setBadgeCountAsync(0). Fire-and-forget — if it fails, the
+  // worst case is the badge starts a touch higher on the next push.
+  ackBadge(): Promise<{ success: boolean }> {
+    return request('/api/badge-ack', { method: 'POST' });
+  },
+
   updateProfile(name: string, timezone: string, partnerTimezone: string, partnerRemark: string): Promise<ProfileResponse> {
     return request('/api/profile', {
       method: 'PUT',
