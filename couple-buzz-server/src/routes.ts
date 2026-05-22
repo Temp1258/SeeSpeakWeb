@@ -485,15 +485,20 @@ export function createPublicRouter(dbOps: DbOps): Router {
     }
 
     // Grace window: if this token has already been rotated, accept the
-    // retry only within ~10s (covers a network failure mid-rotate where
-    // the client never received the new pair). Past the grace window, an
-    // already-rotated token is effectively a leaked / stolen credential
-    // and is rejected.
+    // retry within ~5 minutes (v1.2.19; was 10 s). Real mobile networks
+    // routinely stall a single round-trip well past 10 s — subway /
+    // elevator / weak Wi-Fi — so users whose refresh response was
+    // dropped over a flaky link were getting kicked back to login the
+    // next time they re-opened the app, with no observable cause.
+    // 5 minutes covers the common "backgrounded a few minutes, came
+    // back" pattern while still keeping the window narrow for a leaked
+    // token replay; revoked sessions are rejected ahead of this check
+    // regardless of the window (see `stored.revoked` branch below).
     if (stored.superseded_at) {
       const supersededMs = new Date(stored.superseded_at + 'Z').getTime();
       if (Number.isNaN(supersededMs)) {
         // Defensive: malformed timestamp shouldn't lock the user out.
-      } else if (Date.now() - supersededMs > 10_000) {
+      } else if (Date.now() - supersededMs > 300_000) {
         return res.status(401).json({ error: 'Refresh token already used' });
       }
     }

@@ -154,10 +154,19 @@ export default function SetupScreen({ onRegistered }: Props) {
 
         {step === 'login' && (
           <View style={styles.form}>
+            {/* textContentType + autoComplete tell iOS Keychain / iCloud
+                Password AutoFill that this is the (username, password)
+                pair for the saved credential, so the QuickType bar
+                offers the stored ID on focus. Without textContentType
+                on the ID field, iOS could only autofill the password
+                (it heuristically detects secureTextEntry), leaving the
+                user to type a 6-letter ID they may not remember. */}
             <TextInput style={styles.input} placeholder="你的 ID（6位）" placeholderTextColor={COLORS.textLight}
-              value={loginId} onChangeText={setLoginId} maxLength={6} autoCapitalize="characters" autoFocus />
+              value={loginId} onChangeText={setLoginId} maxLength={6} autoCapitalize="characters" autoFocus
+              textContentType="username" autoComplete="username" />
             <TextInput style={styles.input} placeholder="密码" placeholderTextColor={COLORS.textLight}
-              value={loginPassword} onChangeText={setLoginPassword} secureTextEntry maxLength={32} />
+              value={loginPassword} onChangeText={setLoginPassword} secureTextEntry maxLength={32}
+              textContentType="password" autoComplete="password" />
             <TouchableOpacity style={[styles.button, loading && styles.buttonDisabled]}
               onPress={handleLogin} disabled={loading}>
               <Text style={styles.buttonText}>{loading ? '登录中...' : '登录'}</Text>

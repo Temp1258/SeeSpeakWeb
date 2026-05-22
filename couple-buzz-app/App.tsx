@@ -27,7 +27,7 @@ import { SpringPressable } from './src/components/SpringPressable';
 import { ToolbarSlotContext } from './src/utils/toolbarSlot';
 import { storage } from './src/utils/storage';
 import { registerAndUpdateToken } from './src/services/notification';
-import { api, AuthError } from './src/services/api';
+import { api, AuthError, StatusResponse } from './src/services/api';
 import { connectSocket, disconnectSocket, subscribe } from './src/services/socket';
 import { hasUnreadInboxItems } from './src/utils/inboxUnread';
 import { refreshDeviceTimezoneCache } from './src/utils/timezone';
@@ -391,8 +391,10 @@ export default function App() {
       }
       myUserIdRef.current = userId;
 
-      try {
-        const status = await api.getStatus();
+      // Inline helpers — extracted so the retry path on a generic
+      // AuthError (see catch below) can reuse the success / cache paths
+      // without code duplication.
+      const applyStatus = async (status: StatusResponse): Promise<void> => {
         // Cache the user's own name so screens that display it (InboxScreen,
         // OutboxScreen, etc.) don't fall back to "我" for users who logged in
         // (vs registered) and never saved in Settings.
@@ -400,10 +402,7 @@ export default function App() {
         // Cache both timezones so the very next screen (WriteLetterScreen
         // double-tz preview, InboxScreen postmarks, MailboxScreen next-
         // delivery hint, etc.) reads the server's source of truth instead
-        // of falling back to 'Asia/Shanghai'. Without this, a logged-in
-        // user who set partner_timezone = America/New_York in Settings
-        // on a different device would still see "ta 那边收到时" rendered
-        // in Beijing time until they manually visited Settings.
+        // of falling back to 'Asia/Shanghai'.
         if (status.timezone) await storage.setTimezone(status.timezone);
         if (status.partner_timezone) await storage.setPartnerTimezone(status.partner_timezone);
         if (status.partner_remark) await storage.setPartnerRemark(status.partner_remark);
@@ -416,29 +415,67 @@ export default function App() {
         } else {
           setAppState('waiting');
         }
+      };
+
+      const fallbackToCachedOrWaiting = async (): Promise<void> => {
+        // Network / DNS / wrong URL / 5xx — fall back to cached state so
+        // a transient hiccup doesn't kick the user out of their session.
+        const cachedPartnerName = await storage.getPartnerName();
+        if (cachedPartnerName) {
+          setPartnerName(cachedPartnerName);
+          setStreak(0);
+          setAppState('ready');
+          registerAndUpdateToken();
+        } else {
+          setAppState('waiting');
+        }
+      };
+
+      try {
+        const status = await api.getStatus();
+        await applyStatus(status);
       } catch (error) {
-        if (error instanceof AuthError) {
-          // Server explicitly rejected the session — wipe and re-login.
-          // If another device just kicked us, surface a specific message
-          // so the user understands why they're being bounced to setup.
-          if (error.code === 'session_revoked') {
-            Alert.alert('已退出登录', '此账号在另一台设备上将本机强制下线了。');
-          }
+        // Explicit force-logout from another device — definitive kick,
+        // no retry. Alert the user so they understand why they're back
+        // at SetupScreen.
+        if (error instanceof AuthError && error.code === 'session_revoked') {
+          Alert.alert('已退出登录', '此账号在另一台设备上将本机强制下线了。');
           await storage.clearAll();
           setAppState('setup');
-        } else {
-          // Network / DNS / wrong URL / 5xx — fall back to cached state so
-          // a transient hiccup doesn't kick the user out of their session.
-          const cachedPartnerName = await storage.getPartnerName();
-          if (cachedPartnerName) {
-            setPartnerName(cachedPartnerName);
-            setStreak(0);
-            setAppState('ready');
-            registerAndUpdateToken();
-          } else {
-            setAppState('waiting');
+          return;
+        }
+        if (error instanceof AuthError) {
+          // Generic AuthError — could be a transient post-rotation race
+          // (e.g. on a weak network, our last refresh response got dropped
+          // and our retry now lands past the server's grace window). Wait
+          // briefly and try once more before giving up; most "kicked on
+          // cold-launch over weak Wi-Fi" reports trace back to exactly
+          // this race. One retry is enough — further attempts would just
+          // delay a definitive kick.
+          await new Promise<void>((r) => setTimeout(r, 2500));
+          try {
+            const retryStatus = await api.getStatus();
+            await applyStatus(retryStatus);
+            return;
+          } catch (retryError) {
+            if (retryError instanceof AuthError) {
+              // session_revoked surfacing only on the retry leg gets the
+              // same alert as the early-return path above, so the user
+              // still understands the kick.
+              if (retryError.code === 'session_revoked') {
+                Alert.alert('已退出登录', '此账号在另一台设备上将本机强制下线了。');
+              }
+              await storage.clearAll();
+              setAppState('setup');
+              return;
+            }
+            // Network on the retry — don't kick, fall through to cache.
+            await fallbackToCachedOrWaiting();
+            return;
           }
         }
+        // Non-AuthError on the first try (network / DNS / 5xx).
+        await fallbackToCachedOrWaiting();
       }
     })();
   }, []);
