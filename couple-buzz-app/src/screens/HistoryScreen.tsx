@@ -354,7 +354,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
   const [selectedItem, setSelectedItem] = useState<HistoryAction | null>(null);
   const [editingRemark, setEditingRemark] = useState('');
   const [savingRemark, setSavingRemark] = useState(false);
-  const [reactions, setReactions] = useState<Record<number, HistoryAction[]>>({});
   const listRef = useRef<SectionList>(null);
   const onLatestSeenRef = useRef(onLatestSeen);
   onLatestSeenRef.current = onLatestSeen;
@@ -578,7 +577,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
         setBoundaryId(result.last_read_action_id ?? 0);
       }
       setSections(groupByDate(reversed, tz));
-      setReactions(result.reactions || {});
       const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
       prevLatestIdRef.current = latestId;
       if (latestId > 0) onLatestSeenRef.current?.(latestId);
@@ -618,7 +616,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
             // Polling intentionally does NOT re-capture boundary — it would
             // cause the divider to jump as new messages arrive while viewing.
             setSections(groupByDate(reversed, myTzRef.current));
-            setReactions(result.reactions || {});
             prevLatestIdRef.current = latestId;
             if (latestId > 0) onLatestSeenRef.current?.(latestId);
           }
@@ -665,7 +662,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
       const result = await api.getHistory(100);
       const reversed = [...result.actions].reverse();
       setSections(groupByDate(reversed, myTzRef.current));
-      setReactions(result.reactions || {});
       const latestId = reversed.length > 0 ? reversed[reversed.length - 1].id : 0;
       prevLatestIdRef.current = latestId;
       if (latestId > 0) onLatestSeenRef.current?.(latestId);
@@ -784,7 +780,6 @@ export default function HistoryScreen({ partnerName, onLatestSeen }: Props) {
               partnerTime={pTime}
               isMine={isMine}
               remark={!isMine ? partnerRemark : undefined}
-              reactions={reactions[item.id]}
               onPress={() => handleItemPress(item)}
               animateOnMount={initialRenderDoneRef.current}
               count={(item as GroupedAction).count}

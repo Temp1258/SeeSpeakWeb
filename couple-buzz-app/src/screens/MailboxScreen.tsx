@@ -8,6 +8,7 @@ import InboxScreen, { InboxHandle } from './InboxScreen';
 import OutboxScreen, { OutboxHandle } from './OutboxScreen';
 import TrashScreen, { TrashHandle } from './TrashScreen';
 import StickyWallScreen, { StickyWallHandle } from './StickyWallScreen';
+import SnapCalendarScreen, { SnapCalendarHandle } from './SnapCalendarScreen';
 import WriteLetterScreen from './WriteLetterScreen';
 import { hasUnreadInboxItems, hasFreshOutboxItems } from '../utils/inboxUnread';
 import { api } from '../services/api';
@@ -34,6 +35,7 @@ export default function MailboxScreen() {
   const [outboxOpen, setOutboxOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [stickyOpen, setStickyOpen] = useState(false);
+  const [snapCalendarOpen, setSnapCalendarOpen] = useState(false);
   const [writeOpen, setWriteOpen] = useState(false);
   const [inboxHasUnread, setInboxHasUnread] = useState(false);
   const [outboxHasFresh, setOutboxHasFresh] = useState(false);
@@ -44,6 +46,7 @@ export default function MailboxScreen() {
   const outboxRef = useRef<OutboxHandle>(null);
   const trashRef = useRef<TrashHandle>(null);
   const stickyRef = useRef<StickyWallHandle>(null);
+  const snapCalendarRef = useRef<SnapCalendarHandle>(null);
 
   // Next 半日达 delivery boundary (8am / 8pm BJT, one every 12h) rendered
   // in the user's preferred tz — same shape as the daily refresh hint on
@@ -132,6 +135,7 @@ export default function MailboxScreen() {
         inboxRef.current?.reload(),
         outboxRef.current?.reload(),
         trashRef.current?.reload(),
+        snapCalendarRef.current?.reload(),
         refreshUnreadFlag(),
         refreshStickyFlag({ autoOpenIfTemp: false }),
       ]);
@@ -212,6 +216,19 @@ export default function MailboxScreen() {
           {stickyHasUnread && <Text style={styles.unreadFlag}>🚩</Text>}
           <Text style={styles.entryArrow}>›</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.entry}
+          onPress={() => setSnapCalendarOpen(true)}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.entryEmoji}>📷</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.entryTitle}>快照日历</Text>
+            <Text style={styles.entrySub}>按月查看你们的每日快照</Text>
+          </View>
+          <Text style={styles.entryArrow}>›</Text>
+        </TouchableOpacity>
       </Animated.ScrollView>
 
       {/* Scroll-bound top fade — see UsScreen for rationale. */}
@@ -283,6 +300,11 @@ export default function MailboxScreen() {
         visible={stickyOpen}
         onClose={() => setStickyOpen(false)}
         onUnreadChange={setStickyHasUnread}
+      />
+      <SnapCalendarScreen
+        ref={snapCalendarRef}
+        visible={snapCalendarOpen}
+        onClose={() => setSnapCalendarOpen(false)}
       />
       <WriteLetterScreen
         visible={writeOpen}

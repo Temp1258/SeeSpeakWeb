@@ -292,8 +292,6 @@ export interface DbOps {
   createUser(id: string, name: string, passwordHash: string, pairCode: string, timezone: string): void;
   getUser(id: string): User | undefined;
   getUserByPairCode(pairCode: string): User | undefined;
-  pairUsers(userId: string, partnerId: string): void;
-  unpairUsers(userId: string, partnerId: string): void;
   // Look up the active pair_id for {a, b}; returns null if not currently
   // paired (the row may exist with ended_at set — that's not active).
   couplesGetActivePairId(userIdA: string, userIdB: string): string | null;
@@ -359,19 +357,12 @@ export interface DbOps {
   getLatestPartnerActionId(userId: string, partnerId: string): number;
   addAction(userId: string, pairId: string, actionType: string, senderTimezone: string, senderName: string): void;
   getAction(actionId: number): Action | undefined;
-  addReaction(userId: string, pairId: string, actionType: string, senderTimezone: string, senderName: string, replyTo: number): number;
-  getReaction(actionId: number, userId: string): Action | undefined;
-  updateReaction(reactionId: number, actionType: string): void;
   // pair_id-scoped: only returns actions for the requested relationship,
   // so a re-pair after a different intermediate relationship doesn't
-  // leak earlier-pair history.
+  // leak earlier-pair history. The query filters `reply_to IS NULL`, so
+  // legacy reaction rows (left over from the v1.2.20-and-earlier
+  // long-press-to-react feature, removed in v1.2.21) are invisible.
   getHistory(pairId: string, limit: number): Action[];
-  // Returns reactions whose reply_to is one of the supplied parent
-  // action ids. Empty input → []. Caller (the /api/history route)
-  // passes the ids of the actions it just fetched, so the result is
-  // aligned with the visible page — no LIMIT cutoff that could drop
-  // reactions for older messages once a couple has > 500 reactions.
-  getHistoryReactions(pairId: string, parentActionIds: number[]): Action[];
   // Issue a brand-new session at register/login time. Returns the
   // generated session_id and whether this session was made primary
   // (true iff the user had no other primary at the moment of insert —
@@ -443,9 +434,6 @@ export interface DbOps {
   // 15min) and on socket connect so the device list shows roughly-
   // current "last active" without per-request write amplification.
   touchSessionLastActive(sessionId: string): void;
-  // Returns the session row for a given sid (or undefined). Used by
-  // routes to figure out the requester's session_id from JWT sub+sid.
-  getSession(sessionId: string): RefreshToken | undefined;
   // Force-logout helper for socket.ts: returns the session_id paired
   // with this access-token's refresh-token row; lets socket auth tag
   // the socket so /sessions/:sid DELETE can drop it instantly.
@@ -464,7 +452,6 @@ export interface DbOps {
   getStats(pairId: string, userId: string): StatsData;
   // Rituals
   submitRitual(userId: string, ritualType: 'morning' | 'evening', ritualDate: string): boolean;
-  getRituals(ritualDate: string, userId: string, partnerId: string): Ritual[];
   getRitualsByDates(myDate: string, partnerDate: string, userId: string, partnerId: string): { myMorning: boolean; myEvening: boolean; partnerMorning: boolean; partnerEvening: boolean };
   // Range is two UTC ISO instants — the route layer computes them from the
   // user's tz so the recap counts the right local-day window.
@@ -494,10 +481,10 @@ export interface DbOps {
   setInboxLastSeen(userId: string, iso: string): void;
   getLetterDraft(userId: string): string;
   setLetterDraft(userId: string, draft: string): void;
-  getAllPairedUserTokens(): { device_token: string }[];
-  // Same shape as the broadcast-tokens query but at user granularity, so
-  // scheduler broadcasts can fan out via pushToUser (which fills in the
-  // APNs badge per recipient) instead of bypassing it with raw sendPush.
+  // Distinct paired user ids for scheduler broadcasts. Scheduler used
+  // to fan out by raw token (`getAllPairedUserTokens`, removed in
+  // v1.2.21) but that bypassed pushToUser's per-recipient badge math;
+  // we now go user-by-user.
   getAllPairedUserIds(): string[];
   // Cross-feature unread total used as the default APNs badge when a
   // pushToUser caller doesn't supply one. Sums History + Inbox letters
@@ -548,7 +535,8 @@ export interface DbOps {
   uncompleteBucketItem(id: number, pairId: string): boolean;
   deleteBucketItem(id: number, userId: string, partnerId: string): boolean;
   // Daily Snaps
-  saveSnap(userId: string, snapDate: string, photoPath: string): boolean;
+  // (v1.2.21) Removed `saveSnap` — was the pre-race version, fully
+  // replaced by `saveSnapAtomic`.
   // Atomic INSERT OR IGNORE + read partner's snap inside one transaction.
   // Returns saved=false when the user has already snapped today (so the
   // route can short-circuit with a clear error before touching the file
@@ -1758,30 +1746,14 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
            CASE WHEN a.sender_name != '' THEN a.sender_name ELSE u.name END AS user_name
     FROM actions a JOIN users u ON a.user_id = u.id WHERE a.id = ?
   `);
-  const insertReaction = db.prepare(
-    'INSERT INTO actions (user_id, pair_id, action_type, sender_timezone, sender_name, reply_to) VALUES (?, ?, ?, ?, ?, ?)'
-  );
-  const stmtGetReaction = db.prepare(`
-    SELECT a.id, a.user_id, a.action_type, a.sender_timezone, a.reply_to, a.created_at,
-           CASE WHEN a.sender_name != '' THEN a.sender_name ELSE u.name END AS user_name
-    FROM actions a JOIN users u ON a.user_id = u.id
-    WHERE a.reply_to = ? AND a.user_id = ?
-  `);
-  const stmtUpdateReaction = db.prepare('UPDATE actions SET action_type = ? WHERE id = ?');
-  // Reactions for the current page of /api/history actions. Built per
-  // call because the IN(...) placeholder count varies with the page
-  // size. Old version capped at LIMIT 500 across the entire pair —
-  // long-term couples could lose reactions for older messages once the
-  // 500-most-recent cutoff overflowed past the visible range.
-  const buildReactionsForActionsStmt = (n: number) => db.prepare(`
-    SELECT a.id, a.user_id, a.action_type, a.sender_timezone, a.reply_to, a.created_at,
-           CASE WHEN a.sender_name != '' THEN a.sender_name ELSE u.name END AS user_name
-    FROM actions a
-    JOIN users u ON a.user_id = u.id
-    WHERE a.reply_to IN (${Array.from({ length: n }, () => '?').join(',')})
-      AND a.pair_id = ?
-    ORDER BY a.created_at DESC
-  `);
+  // (v1.2.21) Removed the message-reaction SQL: insertReaction,
+  // stmtGetReaction, stmtUpdateReaction, and the per-page
+  // buildReactionsForActionsStmt builder. The "long-press a partner's
+  // bubble to react with an emoji" feature has been retired; the
+  // `actions.reply_to` column stays in place (SQLite drop-column would
+  // require a table rebuild) and orphan reaction rows in existing DBs
+  // sit untouched (every getHistory query filters `reply_to IS NULL`,
+  // so they're invisible).
   const stmtInsertRefreshToken = db.prepare(`
     INSERT INTO refresh_tokens (
       user_id, token_hash, expires_at,
@@ -2014,9 +1986,7 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
   const stmtSubmitRitual = db.prepare(
     'INSERT OR IGNORE INTO rituals (user_id, ritual_type, ritual_date) VALUES (?, ?, ?)'
   );
-  const stmtGetRituals = db.prepare(
-    'SELECT * FROM rituals WHERE ritual_date = ? AND user_id IN (?, ?)'
-  );
+  // (v1.2.21) `stmtGetRituals` (single-date) deleted with `getRituals`.
   const stmtGetRitualsMultiDate = db.prepare(
     'SELECT * FROM rituals WHERE ((ritual_date = ? AND user_id = ?) OR (ritual_date = ? AND user_id = ?))'
   );
@@ -2071,15 +2041,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
     ORDER BY created_at ASC, id ASC
   `);
   // Scheduler broadcast — every APNs token belonging to a paired user.
-  // Joining device_tokens against users so unpaired accounts (waiting on
-  // partner) don't get scheduler-driven notifications like weekly_report
-  // or mailbox_open that have nothing meaningful to show them.
-  const stmtGetAllPairedTokens = db.prepare(`
-    SELECT dt.apns_token AS device_token
-    FROM device_tokens dt
-    JOIN users u ON u.id = dt.user_id
-    WHERE u.partner_id IS NOT NULL
-  `);
+  // (v1.2.21) `stmtGetAllPairedTokens` deleted with
+  // `getAllPairedUserTokens`; scheduler now fans out per-USER via
+  // `stmtGetAllPairedUserIds` and `pushToUser` handles multi-device.
   // Distinct paired user ids — driver for scheduler broadcasts that need
   // per-user push (so badge can be computed per recipient).
   const stmtGetAllPairedUserIds = db.prepare(`
@@ -2389,19 +2353,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return stmtGetUserByPairCode.get(pairCode) as User | undefined;
     },
 
-    pairUsers(userId: string, partnerId: string): void {
-      db.transaction(() => {
-        updatePartner.run(partnerId, userId);
-        updatePartner.run(userId, partnerId);
-      })();
-    },
-
-    unpairUsers(userId: string, partnerId: string): void {
-      db.transaction(() => {
-        clearPartner.run(userId);
-        clearPartner.run(partnerId);
-      })();
-    },
+    // (v1.2.21) Removed `pairUsers` / `unpairUsers` — superseded by
+    // `pairCouple` / `unpairCouple` which do the same partner_id swap
+    // PLUS the couples-table bookkeeping in a single transaction.
 
     couplesGetActivePairId(userIdA: string, userIdB: string): string | null {
       const [a, b] = sortedPair(userIdA, userIdB);
@@ -2611,36 +2565,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return stmtGetAction.get(actionId) as Action | undefined;
     },
 
-    addReaction(userId: string, pairId: string, actionType: string, senderTimezone: string, senderName: string, replyTo: number): number {
-      const existing = stmtGetReaction.get(replyTo, userId) as Action | undefined;
-      if (existing) {
-        stmtUpdateReaction.run(actionType, existing.id);
-        return existing.id;
-      }
-      const result = insertReaction.run(userId, pairId, actionType, senderTimezone, senderName, replyTo);
-      return Number(result.lastInsertRowid);
-    },
-
-    getReaction(actionId: number, userId: string): Action | undefined {
-      return stmtGetReaction.get(actionId, userId) as Action | undefined;
-    },
-
-    updateReaction(reactionId: number, actionType: string): void {
-      stmtUpdateReaction.run(actionType, reactionId);
-    },
-
     getHistory(pairId: string, limit: number): Action[] {
       return getHistoryStmt.all(pairId, limit) as Action[];
-    },
-
-    getHistoryReactions(pairId: string, parentActionIds: number[]): Action[] {
-      if (parentActionIds.length === 0) return [];
-      // SQLite's compiled-statement parameter limit is 999 by default;
-      // /api/history caps `limit` at 200, so we never get close. Still,
-      // be explicit so a future caller can't blow up the engine.
-      const ids = parentActionIds.slice(0, 999);
-      const stmt = buildReactionsForActionsStmt(ids.length);
-      return stmt.all(...ids, pairId) as Action[];
     },
 
     insertRefreshToken(userId, tokenHash, expiresAt, sessionId, deviceInfo, isPrimary): void {
@@ -2818,9 +2744,10 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       stmtTouchSession.run(sessionId);
     },
 
-    getSession(sessionId): RefreshToken | undefined {
-      return stmtGetSession.get(sessionId) as RefreshToken | undefined;
-    },
+    // (v1.2.21) Removed `getSession` — superseded by
+    // `getActiveSessionForUser` (filters by user_id + sid) everywhere
+    // it was used. Routes that need the row by sid alone use
+    // stmtGetSession directly.
 
     getActiveSessionForUser(userId, sessionId): RefreshToken | undefined {
       const row = stmtGetSession.get(sessionId) as RefreshToken | undefined;
@@ -2917,9 +2844,10 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return result.changes > 0;
     },
 
-    getRituals(ritualDate: string, userId: string, partnerId: string): Ritual[] {
-      return stmtGetRituals.all(ritualDate, userId, partnerId) as Ritual[];
-    },
+    // (v1.2.21) Removed `getRituals` — single-date variant was
+    // superseded by `getRitualsByDates` which takes my/partner
+    // separately (so cross-timezone couples don't accidentally read
+    // the wrong "today").
 
     getRitualsByDates(myDate: string, partnerDate: string, userId: string, partnerId: string): { myMorning: boolean; myEvening: boolean; partnerMorning: boolean; partnerEvening: boolean } {
       const rows = stmtGetRitualsMultiDate.all(myDate, userId, partnerDate, partnerId) as Ritual[];
@@ -2992,9 +2920,9 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       stmtSetOutboxSeen.run(nowSqlite, userId);
     },
 
-    getAllPairedUserTokens(): { device_token: string }[] {
-      return stmtGetAllPairedTokens.all() as { device_token: string }[];
-    },
+    // (v1.2.21) Removed `getAllPairedUserTokens` — replaced everywhere
+    // by `getAllPairedUserIds` (scheduler now fans out per-USER and
+    // calls pushToUser, which handles multi-device fan-out itself).
 
     getAllPairedUserIds(): string[] {
       return (stmtGetAllPairedUserIds.all() as { id: string }[]).map(r => r.id);
@@ -3139,12 +3067,8 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return result.changes > 0;
     },
 
-    // Daily Snaps
-    saveSnap(userId: string, snapDate: string, photoPath: string): boolean {
-      const result = stmtInsertSnap.run(userId, snapDate, photoPath);
-      return result.changes > 0;
-    },
-
+    // Daily Snaps — saveSnap was retired in v1.2.21; saveSnapAtomic is
+    // the only path that takes a write here.
     saveSnapAtomic(userId, partnerId, snapDate, photoPath) {
       return db.transaction(() => {
         const result = stmtInsertSnap.run(userId, snapDate, photoPath);

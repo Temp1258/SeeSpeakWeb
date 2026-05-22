@@ -86,7 +86,8 @@ const PUSH_MESSAGES: Record<string, { title: string; body: string }> = {
   unpair: { title: '💔 已解除配对', body: '{name} 解除了配对' },
   daily_answer: { title: '📝 每日问答', body: '{name} 回答了今天的问题，在等你的答案' },
   daily_both: { title: '📝 每日问答', body: '你们都回答了！快来看看对方的答案' },
-  reaction: { title: '💬 回应', body: '{name} 回应了你' },
+  // (v1.2.21) Removed: 'reaction' template — the long-press-to-react
+  // feature in 废话区 was deleted.
   ritual_morning: { title: '🌅 早安', body: '{name} 说早安了～' },
   ritual_evening: { title: '🌙 晚安', body: '{name} 说晚安了～' },
   ritual_both_morning: { title: '🌅 早安', body: '你们都说了早安！新的一天一起加油 💪' },

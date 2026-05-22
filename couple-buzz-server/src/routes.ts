@@ -713,44 +713,10 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     res.json({ success: true });
   });
 
-  // POST /api/reaction
-  router.post('/reaction', async (req: Request, res: Response) => {
-    const userId = req.userId!;
-    const { action_id, action_type } = req.body;
-
-    if (!action_id || !action_type || typeof action_type !== 'string') {
-      return res.status(400).json({ error: 'action_id and action_type are required' });
-    }
-    if (!VALID_ACTIONS.has(action_type)) {
-      return res.status(400).json({ error: 'Invalid action_type' });
-    }
-
-    const actionId = typeof action_id === 'number' ? action_id : parseInt(action_id, 10);
-    if (isNaN(actionId)) return res.status(400).json({ error: 'action_id must be a valid number' });
-
-    const user = dbOps.getUser(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!user.partner_id) return res.status(400).json({ error: 'Not paired' });
-
-    const targetAction = dbOps.getAction(actionId);
-    if (!targetAction) return res.status(404).json({ error: 'Action not found' });
-    if (targetAction.user_id !== user.partner_id) return res.status(400).json({ error: 'Cannot react to this action' });
-    if (targetAction.reply_to !== null) return res.status(400).json({ error: 'Cannot react to a reaction' });
-
-    const pairId = dbOps.couplesGetActivePairId(userId, user.partner_id);
-    if (!pairId) return res.status(409).json({ error: 'Pair state inconsistent' });
-    const reactionId = dbOps.addReaction(userId, pairId, action_type, user.timezone, user.name, actionId);
-
-    const partner = dbOps.getUser(user.partner_id);
-    // Same online-skip rationale as /api/actions above.
-    if (partner && !isUserOnline(partner.id)) {
-      const unread = dbOps.getUnreadActionCount(partner.id, userId);
-      await pushToUser(dbOps, pushFn, partner.id, 'reaction', user.name, undefined, unread);
-    }
-    emitToCouple(userId, user.partner_id, 'action_new', { from: userId, action_type, reply_to: actionId });
-
-    res.json({ success: true, reaction_id: reactionId });
-  });
+  // (v1.2.21) Removed: POST /api/reaction — the "long-press a partner's
+  // message in 废话区 to send an emoji reaction" feature is gone. The
+  // dailyReaction flow (/api/daily-reaction for 👍 / 👎 on daily question
+  // and snap) is a SEPARATE endpoint and is unaffected.
 
   // GET /api/history
   router.get('/history', (req: Request, res: Response) => {
@@ -773,22 +739,17 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
     const actions = dbOps.getHistory(pairId, Math.min(limit, 200));
 
-    // Group reactions by parent action id. Pass the actions' ids so
-    // the DB only fetches reactions tied to this page — older pairs
-    // used to lose old reactions to a hard LIMIT 500 cutoff.
-    const allReactions = dbOps.getHistoryReactions(pairId, actions.map((a) => a.id));
-    const reactions: Record<number, typeof allReactions> = {};
-    for (const r of allReactions) {
-      if (r.reply_to !== null) {
-        if (!reactions[r.reply_to]) reactions[r.reply_to] = [];
-        reactions[r.reply_to].push(r);
-      }
-    }
+    // (v1.2.21) The legacy "reactions to history actions" feature was
+    // removed — `actions` already filters `reply_to IS NULL` server-
+    // side, so the response only carries top-level entries. The empty
+    // `reactions: {}` field stays in the response body for one release
+    // cycle so older OTA bundles whose `result.reactions || {}` still
+    // expect the key don't crash.
 
     // Send the read pointer alongside actions so the client can render the
     // unread/read divider exactly at where the user left off last session.
     // Read here is non-mutating — POST /api/mark-read advances it.
-    res.json({ actions, reactions, last_read_action_id: user.last_read_action_id });
+    res.json({ actions, reactions: {}, last_read_action_id: user.last_read_action_id });
   });
 
   // POST /api/mark-read — client tells the server it has seen up to this

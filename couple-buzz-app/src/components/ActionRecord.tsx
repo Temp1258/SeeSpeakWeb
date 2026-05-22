@@ -1,7 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
 import { COLORS, ACTION_EMOJI } from '../constants';
-import { HistoryAction } from '../services/api';
 
 interface Props {
   userName: string;
@@ -10,9 +9,7 @@ interface Props {
   partnerTime?: string;
   isMine: boolean;
   remark?: string;
-  reactions?: HistoryAction[];
   onPress?: () => void;
-  onLongPress?: () => void;
   // When true, the bubble springs in with a water-drop wobble on mount.
   // Used for messages that arrive while the user is already viewing — the
   // initial-load batch passes false to avoid every existing item bouncing
@@ -26,8 +23,8 @@ interface Props {
 }
 
 export default function ActionRecord({
-  userName, actionType, time, partnerTime, isMine, remark, reactions,
-  onPress, onLongPress, animateOnMount, count = 1,
+  userName, actionType, time, partnerTime, isMine, remark,
+  onPress, animateOnMount, count = 1,
 }: Props) {
   const emoji = ACTION_EMOJI[actionType] || '?';
   const displayName = !isMine && remark ? `${userName} (${remark})` : userName;
@@ -80,8 +77,6 @@ export default function ActionRecord({
         <TouchableOpacity
           style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}
           onPress={onPress}
-          onLongPress={onLongPress}
-          delayLongPress={400}
           activeOpacity={0.7}
         >
           <View style={styles.emojiRow}>
@@ -109,15 +104,6 @@ export default function ActionRecord({
             )}
           </View>
         </TouchableOpacity>
-        {reactions && reactions.length > 0 && (
-          <View style={[styles.reactionsRow, isMine ? styles.reactionsRowMine : styles.reactionsRowTheirs]}>
-            {reactions.map((r) => (
-              <View key={r.id} style={styles.reactionBadge}>
-                <Text style={styles.reactionEmoji}>{ACTION_EMOJI[r.action_type] || '?'}</Text>
-              </View>
-            ))}
-          </View>
-        )}
       </View>
     </Animated.View>
   );
@@ -184,29 +170,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textLight,
     marginTop: 2,
-  },
-  reactionsRow: {
-    flexDirection: 'row',
-    gap: 4,
-    marginTop: 4,
-  },
-  reactionsRowMine: {
-    justifyContent: 'flex-end',
-    paddingRight: 8,
-  },
-  reactionsRowTheirs: {
-    justifyContent: 'flex-start',
-    paddingLeft: 8,
-  },
-  reactionBadge: {
-    backgroundColor: COLORS.white,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  reactionEmoji: {
-    fontSize: 14,
   },
 });

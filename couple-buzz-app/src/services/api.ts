@@ -271,13 +271,13 @@ export interface HistoryAction {
 
 export interface HistoryResponse {
   actions: HistoryAction[];
-  reactions: Record<number, HistoryAction[]>;
+  // (v1.2.21) `reactions` was the map of long-press-to-react replies
+  // per parent action_id. The feature was removed; the server still
+  // returns an empty object for one release cycle so older OTA bundles
+  // don't crash on `result.reactions || {}`. We keep the field optional
+  // here but no UI reads from it.
+  reactions?: Record<number, HistoryAction[]>;
   last_read_action_id?: number;
-}
-
-export interface ReactionResponse {
-  success: boolean;
-  reaction_id: number;
 }
 
 export interface WsTicketResponse {
@@ -593,13 +593,6 @@ export const api = {
     });
   },
 
-  sendReaction(actionId: number, actionType: string): Promise<ReactionResponse> {
-    return request('/api/reaction', {
-      method: 'POST',
-      body: JSON.stringify({ action_id: actionId, action_type: actionType }),
-    });
-  },
-
   getWsTicket(): Promise<WsTicketResponse> {
     return request('/api/ws-ticket');
   },
@@ -720,9 +713,11 @@ export const api = {
   getCapsules(): Promise<{ capsules: CapsuleItem[] }> {
     return request('/api/capsules');
   },
-  openCapsule(id: number): Promise<{ success: boolean; content: string }> {
-    return request(`/api/capsules/${id}/open`, { method: 'POST' });
-  },
+  // (v1.2.21) openCapsule client method removed — since v1.2.17 the
+  // server-side GET /api/capsules sweep auto-opens any unlockable
+  // capsule on the recipient's behalf, so no explicit open call is
+  // needed. The POST /api/capsules/:id/open endpoint is still alive
+  // server-side for compat.
 
   trashInboxItem(kind: 'mailbox' | 'capsule', refId: number): Promise<{ success: boolean }> {
     return request('/api/inbox/trash', { method: 'POST', body: JSON.stringify({ kind, ref_id: refId }) });
@@ -896,9 +891,9 @@ export const api = {
       body: JSON.stringify({ name }),
     });
   },
-  logout(): Promise<{ success: boolean }> {
-    return request('/api/logout', { method: 'POST' });
-  },
+  // (v1.2.21) Removed client-side `api.logout` — the only logout path
+  // is now DeviceListCard's revokeSessionGroup(). POST /api/logout
+  // endpoint remains alive server-side for defensive / admin use.
 
   // 每日一帖 (sticky notes)
   getStickies(): Promise<StickyWallResponse> {
