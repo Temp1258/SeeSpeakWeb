@@ -509,9 +509,19 @@ const InboxScreen = forwardRef<InboxHandle, Props>(({ visible, onClose }, ref) =
           </SpringPressable>
         </View>
 
+        {/* v1.3.8 — wrapInModal=true (default). Letter overlay rides on its
+            own transparent (overFullScreen on iOS) Modal stacked above the
+            InboxScreen pageSheet. The previous `wrapInModal={false}` was a
+            sibling absoluteFill inside this pageSheet, which let iOS's
+            native pageSheet swipe-to-dismiss recognizer see vertical drags
+            in the letter area — when the inner ScrollView reached its top
+            and the user kept dragging down, the dismiss recognizer took
+            over and the whole inbox slid with the finger. The nested
+            overFullScreen modal blocks all touches from ever reaching the
+            pageSheet's recognizer, so the letter ScrollView is fully
+            self-contained. */}
         <EnvelopeOpenAnimation
           visible={!!revealAnim}
-          wrapInModal={false}
           skipEnvelope
           kindLabel={revealAnim?.kindLabel}
           from={revealAnim?.from}

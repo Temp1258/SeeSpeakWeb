@@ -11,8 +11,14 @@ interface Props {
   date?: string;
   kindLabel?: string;
   onClose: () => void;
-  // When false, render as an absolute-positioned overlay instead of a Modal.
-  // Use false when the parent is already inside a Modal (e.g. InboxScreen).
+  // When false, render as an absolute-positioned overlay sibling instead
+  // of a native Modal layer.
+  // v1.3.8 — DO NOT pass false from inside a pageSheet Modal. The RN-level
+  // overlay can't shield the parent pageSheet's native swipe-to-dismiss
+  // recognizer; once the inner ScrollView reaches its scroll boundary, the
+  // dismiss gesture takes over and the parent modal drags with the finger.
+  // The default (true) wraps in a transparent (overFullScreen on iOS) Modal
+  // that stacks above the parent and fully isolates touches.
   wrapInModal?: boolean;
   // When true, skip the envelope/flap choreography and reveal the letter
   // directly with a quick fade + scale-up. Use this for inbox re-reads where
