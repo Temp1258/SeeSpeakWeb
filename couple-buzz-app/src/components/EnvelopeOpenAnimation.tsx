@@ -70,17 +70,23 @@ export default function EnvelopeOpenAnimation({
 
   const fadeOpacity = useMemo(() => {
     if (!hasOverflow) return null;
-    // Start fading the overlay 30pt before the bottom; opacity hits 0
-    // exactly when the user reaches the bottom, so the overlay
-    // disappears precisely when there's nothing more to reveal.
-    const fadeStart = Math.max(0, overflowAmount - 30);
-    const inputRange = fadeStart < overflowAmount
-      ? [0, fadeStart, overflowAmount]
-      : [0, Math.max(overflowAmount, 0.1)];
-    const outputRange = fadeStart < overflowAmount ? [1, 1, 0] : [1, 0];
+    // Two branches to keep the inputRange strictly increasing — RN
+    // tolerates duplicate boundaries but the behavior at the dup is
+    // implementation-defined, so we avoid it here.
+    //   (i)  overflowAmount > 30  → hold opacity 1 until the last 30pt,
+    //                                then linearly fade to 0.
+    //   (ii) overflowAmount ≤ 30  → degenerate: the entire overflow IS
+    //                                the fade band; 2-point fade is enough.
+    if (overflowAmount > 30) {
+      return scrollY.interpolate({
+        inputRange: [0, overflowAmount - 30, overflowAmount],
+        outputRange: [1, 1, 0],
+        extrapolate: 'clamp',
+      });
+    }
     return scrollY.interpolate({
-      inputRange,
-      outputRange,
+      inputRange: [0, Math.max(overflowAmount, 0.001)],
+      outputRange: [1, 0],
       extrapolate: 'clamp',
     });
   }, [scrollY, hasOverflow, overflowAmount]);
