@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Animated, Easing, Modal, Pressable, Dimensions, ScrollView } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../constants';
 
 interface Props {
@@ -53,6 +54,67 @@ export default function EnvelopeOpenAnimation({
   // small (rises out of the envelope); skipEnvelope starts close to 1 for a
   // quick zoom-in.
   const letterScale = useRef(new Animated.Value(skipEnvelope ? 0.92 : 0.4)).current;
+
+  // v1.3.4 — Scroll affordances for long letters. The visible scroll
+  // indicator + a fading "more below" gradient overlay tell the user
+  // "this letter has more content, drag to read on" so they don't
+  // assume the first page is the whole letter. State drives the
+  // overlay's mounting (hasOverflow gate) and opacity interpolation
+  // (fade-out as the user approaches the bottom).
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const [contentHeight, setContentHeight] = useState(0);
+  const [scrollViewHeight, setScrollViewHeight] = useState(0);
+  const overflowAmount = Math.max(0, contentHeight - scrollViewHeight);
+  // 0.5pt epsilon — sub-pixel rounding shouldn't trigger the overlay.
+  const hasOverflow = overflowAmount > 0.5;
+
+  const fadeOpacity = useMemo(() => {
+    if (!hasOverflow) return null;
+    // Start fading the overlay 30pt before the bottom; opacity hits 0
+    // exactly when the user reaches the bottom, so the overlay
+    // disappears precisely when there's nothing more to reveal.
+    const fadeStart = Math.max(0, overflowAmount - 30);
+    const inputRange = fadeStart < overflowAmount
+      ? [0, fadeStart, overflowAmount]
+      : [0, Math.max(overflowAmount, 0.1)];
+    const outputRange = fadeStart < overflowAmount ? [1, 1, 0] : [1, 0];
+    return scrollY.interpolate({
+      inputRange,
+      outputRange,
+      extrapolate: 'clamp',
+    });
+  }, [scrollY, hasOverflow, overflowAmount]);
+
+  // JS-driven Animated.event (no native driver) so we keep using a
+  // plain <ScrollView>; the fade opacity update path stays on
+  // Animated.Value so the React tree doesn't re-render on every
+  // scroll frame.
+  const onScrollContent = useMemo(
+    () => Animated.event(
+      [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+      { useNativeDriver: false },
+    ),
+    [scrollY],
+  );
+
+  const onContentSizeChange = useCallback((_w: number, h: number) => {
+    setContentHeight(h);
+  }, []);
+
+  const onScrollLayout = useCallback((e: { nativeEvent: { layout: { height: number } } }) => {
+    setScrollViewHeight(e.nativeEvent.layout.height);
+  }, []);
+
+  // Each fresh open (or letter swap via content prop change) starts at
+  // scroll-top with cleared measurements. Stale scrollY from a prior
+  // letter would otherwise paint the new letter's first frame with the
+  // wrong fade opacity (e.g., "already scrolled to bottom" when the
+  // user hasn't even seen the top).
+  useEffect(() => {
+    scrollY.setValue(0);
+    setContentHeight(0);
+    setScrollViewHeight(0);
+  }, [visible, content, scrollY]);
 
   useEffect(() => {
     if (!visible) {
@@ -143,14 +205,31 @@ export default function EnvelopeOpenAnimation({
         {date ? <Text style={styles.dateText}>{date}</Text> : null}
       </View>
       <View style={styles.divider} />
-      <ScrollView
-        style={styles.contentScroll}
-        contentContainerStyle={styles.contentScrollInner}
-        showsVerticalScrollIndicator={false}
-      >
-        <Text style={styles.letterContent}>{content}</Text>
-      </ScrollView>
-      <Text style={styles.tapHint}>轻点空白处收起</Text>
+      <View style={styles.contentWrap}>
+        <ScrollView
+          style={styles.contentScroll}
+          contentContainerStyle={styles.contentScrollInner}
+          showsVerticalScrollIndicator={true}
+          onScroll={onScrollContent}
+          scrollEventThrottle={16}
+          onContentSizeChange={onContentSizeChange}
+          onLayout={onScrollLayout}
+        >
+          <Text style={styles.letterContent}>{content}</Text>
+        </ScrollView>
+        {hasOverflow && fadeOpacity ? (
+          <Animated.View
+            style={[styles.bottomFade, { opacity: fadeOpacity }]}
+            pointerEvents="none"
+          >
+            <LinearGradient
+              colors={['rgba(255,255,255,0)', COLORS.white]}
+              style={StyleSheet.absoluteFill}
+            />
+          </Animated.View>
+        ) : null}
+      </View>
+      <Text style={styles.tapHint}>拖动阅读 · 轻点空白处收起</Text>
     </Pressable>
   );
 
@@ -340,6 +419,14 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.border,
     marginVertical: 14,
   },
+  // v1.3.4 — Positioning wrapper for the ScrollView so the "more
+  // below" gradient overlay can anchor to the scroll-area's actual
+  // bottom edge. Sized intrinsically (= ScrollView's outer after its
+  // maxHeight clamp), no extra constraints of its own.
+  contentWrap: {
+    // RN's absolute children are positioned relative to their parent
+    // regardless of position prop, so no `position: relative` needed.
+  },
   contentScroll: {
     flexShrink: 1,
     // Definite outer-height bound. Without this, RN's ScrollView in a
@@ -352,6 +439,18 @@ const styles = StyleSheet.create({
     // typical accessibility settings. Once content exceeds the bound,
     // internal scrolling activates.
     maxHeight: LETTER_MAX_H - 200,
+  },
+  // v1.3.4 — "More below" gradient overlay. Rendered only when content
+  // overflows the ScrollView, fades out as the user scrolls to the
+  // bottom (driven by Animated.Value tied to onScroll → never causes
+  // React re-renders on scroll frames). pointerEvents="none" so it
+  // can't intercept the ScrollView's vertical-drag gestures.
+  bottomFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 24,
   },
   contentScrollInner: {
     paddingBottom: 6,

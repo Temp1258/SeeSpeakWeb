@@ -122,12 +122,16 @@ describe('#1 — letter reader scrolls long content', () => {
   });
 
   it('envelopeWrap uses pointerEvents="box-none" (lets the inner letter ScrollView receive touches)', () => {
-    expect(ENV_SRC).toMatch(/styles\.envelopeWrap[\s\S]*?pointerEvents="box-none"/);
+    // Restrict the match to the envelopeWrap's opening tag — [^<>] keeps
+    // us from drifting into adjacent JSX elements or // comments lower in
+    // the file (which historically caused false matches once v1.3.4 added
+    // a bottomFade overlay with its own pointerEvents="none" further down).
+    expect(ENV_SRC).toMatch(/styles\.envelopeWrap[^<>]*?pointerEvents="box-none"/);
   });
 
   it('envelopeWrap no longer uses pointerEvents="none" (sealed off all interaction)', () => {
-    // Make sure the prior bug doesn't sneak back in via a stray "none".
-    expect(ENV_SRC).not.toMatch(/styles\.envelopeWrap[\s\S]*?pointerEvents="none"/);
+    // Same tightening as above — must stay inside envelopeWrap's opening tag.
+    expect(ENV_SRC).not.toMatch(/styles\.envelopeWrap[^<>]*?pointerEvents="none"/);
   });
 
   it('still uses a ScrollView around letter content (not Text-only, which never scrolls)', () => {
