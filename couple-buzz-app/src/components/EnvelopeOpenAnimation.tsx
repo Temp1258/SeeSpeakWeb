@@ -365,20 +365,29 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: 'rgba(255,143,171,0.5)',
   },
+  // v1.3.6 — letterContainer / letterCenter pin a DEFINITE height
+  // (was maxHeight). RN/Yoga needs a definite main-axis size on the
+  // outer card for `flex: 1` children below (letterPress → contentWrap
+  // → ScrollView) to size deterministically. Under maxHeight alone,
+  // the flex chain falls back to intrinsic content height and the
+  // ScrollView never gets a bounded outer frame on Dynamic Type or
+  // small-screen edge cases, so long letters truncate.
   letterContainer: {
     position: 'absolute',
     bottom: ENV_H * 0.15,
     width: LETTER_W,
-    maxHeight: LETTER_MAX_H,
+    height: LETTER_MAX_H,
   },
   letterCenter: {
     width: LETTER_W,
-    maxHeight: LETTER_MAX_H,
+    height: LETTER_MAX_H,
   },
+  // letterPress now fills its definite-height parent and acts as the
+  // flex-column container that distributes height to header / divider /
+  // contentWrap / tapHint. No more minHeight/maxHeight math.
   letterPress: {
     width: '100%',
-    minHeight: 360,
-    maxHeight: LETTER_MAX_H,
+    flex: 1,
     backgroundColor: COLORS.white,
     borderRadius: 16,
     borderWidth: 1,
@@ -425,26 +434,27 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.border,
     marginVertical: 14,
   },
-  // v1.3.4 — Positioning wrapper for the ScrollView so the "more
-  // below" gradient overlay can anchor to the scroll-area's actual
-  // bottom edge. Sized intrinsically (= ScrollView's outer after its
-  // maxHeight clamp), no extra constraints of its own.
+  // v1.3.6 — contentWrap absorbs all remaining height inside letterPress
+  // after header / divider / tapHint take their natural sizes. `flex: 1`
+  // makes it grow into available space; `minHeight: 0` is REQUIRED in
+  // RN's column flex so it can shrink below its intrinsic content size
+  // when the inner ScrollView's content exceeds the available frame.
+  // Without minHeight: 0, the wrap would refuse to shrink and the
+  // ScrollView would never perceive overflow → no scroll.
   contentWrap: {
-    // RN's absolute children are positioned relative to their parent
-    // regardless of position prop, so no `position: relative` needed.
+    flex: 1,
+    minHeight: 0,
   },
+  // v1.3.6 — ScrollView fills contentWrap exactly. Previously we had a
+  // hardcoded `maxHeight: LETTER_MAX_H - 200` reserving 200pt for
+  // header/divider/tapHint/padding, but that reserve was wrong on:
+  //   - small screens (iPhone SE 1st: only 198pt of scroll window)
+  //   - Dynamic Type Large+ (header > 90pt eats the reserve)
+  //   - long partner remarks (fromToText wraps to 2-3 lines)
+  // With definite-height letterPress + flex-chain below, the ScrollView
+  // now adapts to whatever space is actually left, no magic numbers.
   contentScroll: {
-    flexShrink: 1,
-    // Definite outer-height bound. Without this, RN's ScrollView in a
-    // flex column sized to its own content (intrinsic = content height),
-    // so the parent card clipped at maxHeight but the ScrollView never
-    // perceived the overflow — long letters showed one page with no way
-    // to scroll. Pinning maxHeight to (LETTER_MAX_H − 200) reserves room
-    // for header (kind/from-to/date), divider, tap hint and the card's
-    // vertical padding, with enough buffer to absorb Dynamic Type at
-    // typical accessibility settings. Once content exceeds the bound,
-    // internal scrolling activates.
-    maxHeight: LETTER_MAX_H - 200,
+    flex: 1,
   },
   // v1.3.4 — "More below" gradient overlay. Rendered only when content
   // overflows the ScrollView, fades out as the user scrolls to the

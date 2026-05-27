@@ -81,8 +81,9 @@ describe('#1 — letter reader exposes scroll affordances', () => {
     expect(ENV_SRC).toMatch(
       /Animated\.event\([\s\S]*?contentOffset:\s*\{\s*y:\s*scrollY\s*\}/,
     );
-    // Plain ScrollView is preserved (JS-driven Animated.event), so the
-    // v1.3.3 maxHeight on contentScroll still works the same way.
+    // Plain ScrollView (JS-driven Animated.event). v1.3.6 replaced the
+    // hardcoded contentScroll.maxHeight with a flex chain; the affordance
+    // overlay still attaches to the same ScrollView via the same path.
     expect(ENV_SRC).toMatch(/useNativeDriver:\s*false/);
   });
 
@@ -114,9 +115,15 @@ describe('#1 — letter reader exposes scroll affordances', () => {
     );
   });
 
-  it('preserves v1.3.3 maxHeight bound on contentScroll (the layout fix that lets scroll activate)', () => {
-    expect(ENV_SRC).toMatch(
-      /contentScroll:\s*\{[\s\S]*?maxHeight:\s*LETTER_MAX_H\s*-\s*\d+/,
-    );
+  it('contentScroll is bounded by the v1.3.6 flex chain (definite-height parent + flex: 1 cascade)', () => {
+    // v1.3.6 replaced contentScroll.maxHeight: LETTER_MAX_H - 200 with
+    // flex: 1 on contentScroll (and flex: 1 + minHeight: 0 on contentWrap,
+    // height: LETTER_MAX_H on letterCenter). The bound now comes from
+    // the definite-height root, not a hardcoded reserve — robust across
+    // Dynamic Type, small screens, and long sender/recipient remarks.
+    // [^}]*? confines matches to a single style block.
+    expect(ENV_SRC).toMatch(/contentScroll:\s*\{[^}]*?\bflex:\s*1\b/);
+    expect(ENV_SRC).toMatch(/contentWrap:\s*\{[^}]*?\bflex:\s*1\b[^}]*?minHeight:\s*0/);
+    expect(ENV_SRC).toMatch(/letterCenter:\s*\{[^}]*?\bheight:\s*LETTER_MAX_H\b/);
   });
 });

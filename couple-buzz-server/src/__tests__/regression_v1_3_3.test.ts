@@ -111,14 +111,37 @@ describe('#1 — letter reader scrolls long content', () => {
     'utf8',
   );
 
-  it('contentScroll pins maxHeight to (LETTER_MAX_H − reserve) so internal scroll activates', () => {
-    expect(ENV_SRC).toMatch(
-      /contentScroll:\s*\{[\s\S]*?maxHeight:\s*LETTER_MAX_H\s*-\s*\d+/,
-    );
+  // v1.3.6 — replaced the hardcoded `LETTER_MAX_H - 200` reserve with a
+  // proper flex chain (definite height on letterCenter → flex: 1 on
+  // letterPress → flex: 1 + minHeight: 0 on contentWrap → flex: 1 on
+  // contentScroll). The new contract: the ScrollView gets whatever space
+  // is left after header/divider/tapHint, no magic numbers, robust under
+  // Dynamic Type and small screens.
+  // [^}]*? confines the match to the style block itself (no `}` inside
+  // a single style object), so a later style's properties or a comment
+  // referencing the old layout can't trick the assertion.
+  it('letterCenter pins a definite height (was maxHeight) so the flex chain has a sized root', () => {
+    expect(ENV_SRC).toMatch(/letterCenter:\s*\{[^}]*?\bheight:\s*LETTER_MAX_H\b/);
+    expect(ENV_SRC).not.toMatch(/letterCenter:\s*\{[^}]*?maxHeight:\s*LETTER_MAX_H/);
   });
 
-  it('contentScroll keeps flexShrink so short letters fit content without forcing the bound', () => {
-    expect(ENV_SRC).toMatch(/contentScroll:\s*\{[\s\S]*?flexShrink:\s*1/);
+  it('letterContainer (envelope mode) also pins definite height for layout parity', () => {
+    expect(ENV_SRC).toMatch(/letterContainer:\s*\{[^}]*?\bheight:\s*LETTER_MAX_H\b/);
+  });
+
+  it('letterPress uses flex: 1 to fill its definite-height parent', () => {
+    expect(ENV_SRC).toMatch(/letterPress:\s*\{[^}]*?\bflex:\s*1\b/);
+    expect(ENV_SRC).not.toMatch(/letterPress:\s*\{[^}]*?minHeight:\s*360/);
+    expect(ENV_SRC).not.toMatch(/letterPress:\s*\{[^}]*?maxHeight:\s*LETTER_MAX_H/);
+  });
+
+  it('contentWrap uses flex: 1 + minHeight: 0 (RN requirement to shrink in column flex)', () => {
+    expect(ENV_SRC).toMatch(/contentWrap:\s*\{[^}]*?\bflex:\s*1\b[^}]*?minHeight:\s*0/);
+  });
+
+  it('contentScroll uses flex: 1 (no more hardcoded maxHeight reserve)', () => {
+    expect(ENV_SRC).toMatch(/contentScroll:\s*\{[^}]*?\bflex:\s*1\b/);
+    expect(ENV_SRC).not.toMatch(/contentScroll:\s*\{[^}]*?maxHeight:\s*LETTER_MAX_H/);
   });
 
   it('envelopeWrap uses pointerEvents="box-none" (lets the inner letter ScrollView receive touches)', () => {
