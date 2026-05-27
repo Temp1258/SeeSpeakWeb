@@ -1359,8 +1359,12 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!content || typeof content !== 'string' || !content.trim()) {
       return res.status(400).json({ error: 'content is required' });
     }
-    if (content.length > 500) {
-      return res.status(400).json({ error: 'content max 500 characters' });
+    // v1.3.7 — aligned with the client's maxLength={1000} in
+    // WriteLetterScreen (and matching the capsule cap). Was 500, which
+    // silently rejected letters between 501-1000 chars even though the UI
+    // showed "X / 1000" and the user thought they were within bounds.
+    if (content.length > 1000) {
+      return res.status(400).json({ error: 'content max 1000 characters' });
     }
 
     const user = dbOps.getUser(userId);
@@ -1572,16 +1576,19 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     }
 
     // Authorization: user must be a recipient of the referenced item.
+    // v1.3.7 — both lookups now receive `pairId`. The db layer refuses
+    // cross-pair rows, so a known-id from a previous (revived) pair_id
+    // can't be poked into this validator any more.
     if (kind === 'mailbox') {
       // The referenced mailbox row must be authored by the partner (user
       // is the recipient).
-      const row = dbOps.getMailboxMessageById(ref_id);
+      const row = dbOps.getMailboxMessageById(ref_id, pairId);
       if (!row || row.user_id !== user.partner_id) {
         res.status(404).json({ error: 'Letter not found' });
         return null;
       }
     } else {
-      const row = dbOps.getCapsuleById(ref_id);
+      const row = dbOps.getCapsuleById(ref_id, pairId);
       if (!row) {
         res.status(404).json({ error: 'Letter not found' });
         return null;
@@ -1612,7 +1619,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     // no way to restore. The UI only exposes trash on opened capsules; this
     // is the API-side guard for direct callers.
     if (v.kind === 'capsule') {
-      const capsule = dbOps.getCapsuleById(v.refId);
+      const capsule = dbOps.getCapsuleById(v.refId, v.pairId);
       if (capsule && !capsule.opened_at) {
         return res.status(400).json({ error: 'Cannot trash an unopened capsule' });
       }

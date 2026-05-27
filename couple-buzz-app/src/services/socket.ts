@@ -63,6 +63,13 @@ export async function connectSocket(): Promise<void> {
     socket.on('presence_single', () => emit('presence_single'));
     socket.on('action_new', (data) => emit('action_new', data));
     socket.on('sticky_update', (data) => emit('sticky_update', data));
+    // v1.3.7 — bridge the daily_update server event into the local
+    // listener bus. The server emits it from /daily-question/answer,
+    // /snaps, and /daily-reaction so DailyQuestionCard / DailySnapCard
+    // can live-refresh without a manual pull. Previously this line was
+    // missing; cards subscribed but received nothing, forcing a tab-
+    // switch / pull-to-refresh to see "ta 已答 / 已拍".
+    socket.on('daily_update', (data) => emit('daily_update', data));
 
     socket.on('connect', () => {
       ticketRetries = 0;

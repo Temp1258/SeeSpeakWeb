@@ -655,6 +655,16 @@ export const api = {
     });
   },
 
+  // v1.3.7 — edit an existing important date. Backend route (PUT /dates/:id)
+  // has been live since the date CRUD was added; the client just never
+  // exposed an entry point, so users could only "delete + re-create".
+  updateDate(id: number, title: string, date: string, recurring: boolean): Promise<{ success: boolean }> {
+    return request(`/api/dates/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title, date, recurring }),
+    });
+  },
+
   deleteDate(id: number): Promise<{ success: boolean }> {
     return request(`/api/dates/${id}`, { method: 'DELETE' });
   },

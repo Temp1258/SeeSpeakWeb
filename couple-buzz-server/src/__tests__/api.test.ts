@@ -1986,16 +1986,23 @@ describe('Mailbox API', () => {
     }
   });
 
-  it('should reject content over 500 chars', async () => {
+  it('should reject content over 1000 chars (v1.3.7 — aligned with UI maxLength=1000)', async () => {
     const { app } = createTestApp();
     const { alice } = await registerPairedUsers(app);
 
-    const res = await request(app)
+    // 1000 chars is the boundary; 1001 must reject.
+    const okRes = await request(app)
       .post('/api/mailbox')
       .set('Authorization', `Bearer ${alice.access_token}`)
-      .send({ content: 'x'.repeat(501) });
+      .send({ content: 'x'.repeat(1000) });
+    expect(okRes.status).toBe(200);
 
-    expect(res.status).toBe(400);
+    const { bob } = await registerPairedUsers(app);
+    const tooLong = await request(app)
+      .post('/api/mailbox')
+      .set('Authorization', `Bearer ${bob.access_token}`)
+      .send({ content: 'x'.repeat(1001) });
+    expect(tooLong.status).toBe(400);
   });
 
   it('should get mailbox archive', async () => {

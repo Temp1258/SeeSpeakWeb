@@ -261,13 +261,9 @@ export default function WriteLetterScreen({ visible, onClose, partnerName }: Pro
   };
 
   const handlePickKind = (kind: 'mailbox' | 'capsule') => {
-    // Mailbox is server-capped at 500 chars (capsule at 1000). Catch the
-    // length mismatch in the client so the user doesn't tap 半日达 and
-    // bounce off a 400 only after the sealing animation kicks off.
-    if (kind === 'mailbox' && content.trim().length > 500) {
-      Alert.alert('', '半日达最多 500 字～\n这封超过了，要不寄择日达？');
-      return;
-    }
+    // v1.3.7 — mailbox and capsule now share the same 1000-char cap server
+    // side, matching the UI's maxLength=1000. Removed the old "半日达 500
+    // 字" client-side guard since the limit is no longer asymmetric.
     Haptics.selectionAsync();
     if (kind === 'mailbox') {
       runSubmit('mailbox');

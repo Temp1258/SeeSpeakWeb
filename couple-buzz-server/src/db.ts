@@ -171,6 +171,11 @@ export interface Ritual {
 export interface MailboxMessage {
   id: number;
   user_id: string;
+  // Couple-scope tag. Nullable for pre-pair_id-migration legacy rows;
+  // those are cleaned up by the migrate pass but defensive code treats
+  // NULL as "trust the row-level user_id check" instead of forcing a
+  // hard mismatch.
+  pair_id: string | null;
   week_key: string;
   content: string;
   created_at: string;
@@ -181,6 +186,8 @@ export interface TimeCapsule {
   id: number;
   user_id: string;
   partner_id: string;
+  // Same nullability story as MailboxMessage.pair_id.
+  pair_id: string | null;
   content: string;
   // Date-only field kept for legacy callers + the trash join. New unlock
   // logic uses unlock_at (full ISO with minute precision).
@@ -562,8 +569,13 @@ export interface DbOps {
   clearInboxAction(userId: string, kind: 'mailbox' | 'capsule', refId: number): void;
   getInboxActionStatus(userId: string, kind: 'mailbox' | 'capsule', refId: number): 'trashed' | 'purged' | null;
   getTrashedInboxItems(userId: string, partnerId: string): TrashedInboxItem[];
-  getMailboxMessageById(id: number): MailboxMessage | undefined;
-  getCapsuleById(id: number): TimeCapsule | undefined;
+  // v1.3.7 — both accept the caller's active pair_id and refuse to return
+  // a row whose own pair_id doesn't match. Defense-in-depth: a route that
+  // forgets to compare pair_id explicitly still can't pull cross-pair rows.
+  // Legacy rows with NULL pair_id (pre-migration) are passed through so
+  // the row's own user_id-based auth remains the gate.
+  getMailboxMessageById(id: number, pairId: string): MailboxMessage | undefined;
+  getCapsuleById(id: number, pairId: string): TimeCapsule | undefined;
   getDailyReaction(reactorId: string, targetUserId: string, targetDate: string, targetType: 'question' | 'snap'): 'up' | 'down' | null;
   // Sticky notes (每日一帖)
   getTempSticky(userId: string): StickyNote | undefined;
@@ -3175,12 +3187,21 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       return out;
     },
 
-    getMailboxMessageById(id): MailboxMessage | undefined {
-      return stmtGetMailboxMessageById.get(id) as MailboxMessage | undefined;
+    getMailboxMessageById(id, pairId): MailboxMessage | undefined {
+      const row = stmtGetMailboxMessageById.get(id) as MailboxMessage | undefined;
+      if (!row) return undefined;
+      // Only reject when the row tagged a (different) pair_id. Legacy rows
+      // pre-pair_id-migration store NULL; those flow through and the caller
+      // still verifies user_id / visibility before exposing the row.
+      if (row.pair_id != null && row.pair_id !== pairId) return undefined;
+      return row;
     },
 
-    getCapsuleById(id): TimeCapsule | undefined {
-      return stmtGetCapsuleById.get(id) as TimeCapsule | undefined;
+    getCapsuleById(id, pairId): TimeCapsule | undefined {
+      const row = stmtGetCapsuleById.get(id) as TimeCapsule | undefined;
+      if (!row) return undefined;
+      if (row.pair_id != null && row.pair_id !== pairId) return undefined;
+      return row;
     },
 
     // -- Sticky notes (每日一帖) -------------------------------------------

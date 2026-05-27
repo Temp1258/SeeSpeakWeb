@@ -31,6 +31,11 @@ export default function AnniversaryWishScreen() {
   const [newDateTitle, setNewDateTitle] = useState('');
   const [newDateRecurring, setNewDateRecurring] = useState(false);
   const [showAddDate, setShowAddDate] = useState(false);
+  // v1.3.7 — null = 添加模式; ImportantDate = 编辑模式 (existing row being
+  // updated). Drives the form's submit branch (POST vs PUT) and the
+  // 添加 / 保存 label swap. PUT /dates/:id has always existed server-side;
+  // the client just hadn't surfaced an entry point.
+  const [editingDate, setEditingDate] = useState<ImportantDate | null>(null);
 
   const todayInit = new Date();
   const [pickYear, setPickYear] = useState(todayInit.getFullYear());
@@ -79,17 +84,48 @@ export default function AnniversaryWishScreen() {
     }, [loadDates])
   );
 
-  const handleAddDate = async () => {
+  // Pulls form state back to add-mode defaults. Used both by 取消 and
+  // after a successful save so the next 添加纪念日 tap opens fresh.
+  const closeDateForm = () => {
+    setShowAddDate(false);
+    setEditingDate(null);
+    setNewDateTitle('');
+    setNewDateRecurring(false);
+  };
+
+  const handleStartEdit = (d: ImportantDate) => {
+    // "YYYY-MM-DD" → numeric year/month/day for the existing 3-segment picker.
+    // The same picker handles both add and edit; pre-seeding it here keeps
+    // the UX identical to the add flow.
+    const parts = d.date.split('-');
+    const y = Number(parts[0]);
+    const m = Number(parts[1]);
+    const day = Number(parts[2]);
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(day)) return;
+    setEditingDate(d);
+    setNewDateTitle(d.title);
+    // `recurring` lands here as 0/1 from SQLite; the local form state is
+    // boolean. Coerce so the checkbox label flips correctly on edit.
+    setNewDateRecurring(!!d.recurring);
+    setPickYear(y);
+    setPickMonth(m);
+    setPickDay(day);
+    setShowAddDate(true);
+  };
+
+  const handleSaveDate = async () => {
     const title = newDateTitle.trim();
     if (!title) { Alert.alert('', '请输入标题'); return; }
     try {
-      await api.createDate(title, composedDate, newDateRecurring);
-      setNewDateTitle('');
-      setNewDateRecurring(false);
-      setShowAddDate(false);
+      if (editingDate) {
+        await api.updateDate(editingDate.id, title, composedDate, newDateRecurring);
+      } else {
+        await api.createDate(title, composedDate, newDateRecurring);
+      }
+      closeDateForm();
       loadDates();
     } catch (e: any) {
-      Alert.alert('添加失败', e.message);
+      Alert.alert(editingDate ? '保存失败' : '添加失败', e.message);
     }
   };
 
@@ -149,6 +185,9 @@ export default function AnniversaryWishScreen() {
                 {d.pinned ? '已置顶' : '置顶'}
               </Text>
             </TouchableOpacity>
+            <TouchableOpacity onPress={() => handleStartEdit(d)}>
+              <Text style={styles.dateEdit}>编辑</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={() => handleDeleteDate(d.id, d.title)}>
               <Text style={styles.dateDelete}>删除</Text>
             </TouchableOpacity>
@@ -189,11 +228,11 @@ export default function AnniversaryWishScreen() {
               </Text>
             </TouchableOpacity>
             <View style={styles.addDateActions}>
-              <TouchableOpacity style={styles.addDateCancel} onPress={() => setShowAddDate(false)}>
+              <TouchableOpacity style={styles.addDateCancel} onPress={closeDateForm}>
                 <Text style={styles.addDateCancelText}>取消</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.addDateConfirm} onPress={handleAddDate}>
-                <Text style={styles.addDateConfirmText}>添加</Text>
+              <TouchableOpacity style={styles.addDateConfirm} onPress={handleSaveDate}>
+                <Text style={styles.addDateConfirmText}>{editingDate ? '保存' : '添加'}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -389,6 +428,7 @@ const styles = StyleSheet.create({
   pinBtnActive: { backgroundColor: '#FFF0F3', borderColor: COLORS.kiss },
   pinBtnText: { fontSize: 12, color: COLORS.textLight },
   pinBtnTextActive: { color: COLORS.kiss, fontWeight: '600' },
+  dateEdit: { fontSize: 14, color: COLORS.textLight, fontWeight: '500', marginRight: 10 },
   dateDelete: { fontSize: 14, color: '#FF6B6B', fontWeight: '500' },
   addDateForm: { marginTop: 8 },
   recurringToggle: { marginTop: 10, paddingVertical: 6 },
