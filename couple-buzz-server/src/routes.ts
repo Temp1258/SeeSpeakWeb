@@ -2611,7 +2611,7 @@ export function createProtectedRouter(dbOps: DbOps, pushFn: SendPushFn): Router 
     if (!ctx) return;
     const id = parseId(req.params.id as string);
     if (id === null) return res.status(400).json({ error: 'Invalid ID' });
-    const ok = dbOps.deleteSticky(id, ctx.userId, ctx.partnerId);
+    const ok = dbOps.deleteSticky(id, ctx.pairId);
     if (!ok) return res.status(404).json({ error: 'Sticky not found' });
     emitToCouple(ctx.userId, ctx.partnerId, 'sticky_update', {
       from: ctx.userId,

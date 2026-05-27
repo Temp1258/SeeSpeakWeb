@@ -583,9 +583,10 @@ export interface DbOps {
   commitBlock(stickyId: number, authorId: string, content: string): StickyBlock | null;
   markStickySeen(userId: string, stickyId: number, blockId: number): void;
   // Permanently rip a posted sticky off the wall. Cascades through blocks +
-  // per-recipient seen rows. Either side of the couple can tear; the route
-  // checks couple membership upstream.
-  deleteSticky(stickyId: number, userId: string, partnerId: string): boolean;
+  // per-recipient seen rows. The pair_id filter inside the lookup is what
+  // gates cross-couple access — the route must pass the caller's active
+  // pairId, which it already resolves via requirePair.
+  deleteSticky(stickyId: number, pairId: string): boolean;
   // Delete a single committed comment block. Restricted to the block's own
   // author and never the sticky's first (oldest) committed block — the spec
   // forbids removing the original post via the per-block path; users have to
@@ -3313,11 +3314,16 @@ export function createDatabase(dbPath?: string): { db: DatabaseType; dbOps: DbOp
       stmtUpsertStickySeen.run(userId, stickyId, blockId);
     },
 
-    deleteSticky(stickyId, userId, partnerId): boolean {
+    deleteSticky(stickyId, pairId): boolean {
       return db.transaction(() => {
-        const sticky = stmtGetStickyForCouple.get(
-          stickyId, userId, partnerId, partnerId, userId
-        ) as StickyNote | undefined;
+        // stmtGetStickyForCouple's SQL takes (id, pair_id) — 2 placeholders.
+        // Pre-v1.2.0 this statement had a 5-placeholder OR clause across
+        // (user_id, partner_id) pairs; when the couple model was refactored
+        // to a single pair_id column the statement was rewritten but this
+        // call site still passed 5 args, which made better-sqlite3 throw
+        // RangeError on every tear-down → Express returned 500. Aligning
+        // the arg count fixes the path.
+        const sticky = stmtGetStickyForCouple.get(stickyId, pairId) as StickyNote | undefined;
         if (!sticky || sticky.status !== 'posted') return false;
         stmtDeleteStickyBlocks.run(stickyId);
         stmtDeleteStickySeenRows.run(stickyId);

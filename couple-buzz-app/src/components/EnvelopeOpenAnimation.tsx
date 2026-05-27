@@ -177,7 +177,14 @@ export default function EnvelopeOpenAnimation({
               styles.envelopeWrap,
               { transform: [{ scale: envelopeScale }] },
             ]}
-            pointerEvents="none"
+            // box-none: the wrap itself doesn't catch touches (so taps on
+            // the decorative envelope back / pocket / flap still bubble
+            // up to pressOut → onClose), but children can. That lets the
+            // inner letter Pressable absorb taps without dismissing, and
+            // — more importantly — lets the content ScrollView claim
+            // vertical-drag gestures for long letters. (was "none", which
+            // sealed the entire reveal off from any interaction.)
+            pointerEvents="box-none"
           >
             <View style={styles.envelopeBody} />
 
@@ -334,8 +341,17 @@ const styles = StyleSheet.create({
     marginVertical: 14,
   },
   contentScroll: {
-    flexGrow: 0,
     flexShrink: 1,
+    // Definite outer-height bound. Without this, RN's ScrollView in a
+    // flex column sized to its own content (intrinsic = content height),
+    // so the parent card clipped at maxHeight but the ScrollView never
+    // perceived the overflow — long letters showed one page with no way
+    // to scroll. Pinning maxHeight to (LETTER_MAX_H − 200) reserves room
+    // for header (kind/from-to/date), divider, tap hint and the card's
+    // vertical padding, with enough buffer to absorb Dynamic Type at
+    // typical accessibility settings. Once content exceeds the bound,
+    // internal scrolling activates.
+    maxHeight: LETTER_MAX_H - 200,
   },
   contentScrollInner: {
     paddingBottom: 6,
