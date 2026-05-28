@@ -2,8 +2,8 @@
 
 > 一款专为情侣两人设计的亲密互动 App。把日常的小事攒成关系里的仪式感。
 
-[![Release](https://img.shields.io/badge/release-v1.2.16-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.16)
-[![Tests](https://img.shields.io/badge/tests-181%20passing-success)](./couple-buzz-server)
+[![Release](https://img.shields.io/badge/release-v1.3.8-ff69b4)](https://github.com/Temp1258/PoopHub/releases/tag/v1.3.8)
+[![Tests](https://img.shields.io/badge/tests-366%20passing-success)](./couple-buzz-server)
 [![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-iOS-lightgrey)]()
 [![Stack](https://img.shields.io/badge/stack-RN%20%2B%20Expo%20%2B%20Node-brightgreen)]()
@@ -30,8 +30,10 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 - **50+ 表情一键发**：4 类网格（表达爱意 / 心情 / 日常 / 找你），上滑出下滑收
 - **APNs 推送 + Haptic**：每个动作推送对方手机 + 触感反馈
 - **在线静音**：对方在 App 前台时跳过 emoji 推送，红点完全由 socket 驱动，避免双端同时在线时锁屏被刷屏
-- **聊天式时间线**：按日聚合，5 分钟内同一表情连发自动折叠成 `表情 ×NN`，新一下落地时计数弹跳一次（v1.2.20）
+- **聊天式时间线 + 连发折叠**：按日聚合；5 分钟内同一表情连发**屏幕内**自动折叠成 `表情 ×NN`，新一下落地时计数弹跳一次；**锁屏推送同步合并** —— server 端 `bursts.ts` 跟踪 5 min 滚动窗口，第二条起带 `×N` 文案 + 稳定 `collapseId`，APNs collapse-id 把旧通知替换掉，5 个 💋 spam 在锁屏只显示 1 条 banner，数字滚到 ×5（v1.3.1）
+- **上拉翻页**：列表顶端再拖动一次触发 `loadOlder`（before_id cursor + has_more），SectionList 用 `maintainVisibleContentPosition` 让 prepend 旧消息时可视区不跳；单次拖动只触发一次，要再加载下一页必须重新拖动（v1.3.2）
 - **未读分界线 + 水滴入场**：上次离开位置自动画一条「以下是新消息」分界线，新消息以水滴 spring 入场动画落入列表
+- **长按标题自定义**：长按页面标题（默认「香宝聚集地 💕」）弹 prompt 改文案，30 字上限、whitespace-only 视为清空，按账号 per-user 持久到服务端（v1.2.20）
 - **时区感知**：每条记录按双方各自所在时区分别显示时间
 - **桌面 badge 真实未读数**：iOS 图标右上角显示对方发的未读消息数（一次性 mark-read 防客户端越权）
 
@@ -51,6 +53,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 - 📬 **收件箱** — 已送达的半日达 + 已开启的择日达
 - 🗑️ **废件箱** — 从收件箱删除的信件可以在这里恢复（v1.1 前叫「垃圾篓」）
 - 📝 **小贴吧** — 双方共享的便利贴墙（v1.1 新增）
+- 📷 **快照日历** — 按月查看双方每日自拍：7 列网格 + Polaroid 缩略图 + 月份切换；两人都拍当天双张错位叠放（我的在上 +2° / ta 的在下 -2°），today cell 粉边框；右下角「ta / 我」segmented toggle 单视角切换；点 cell 全屏预览，点空白处收起（v1.2.21 / v1.3.0–v1.3.2）
 
 底部固定的 ✉️ pill 进入**统一写信流程**（半日达 / 择日达分支由封信后选择）。底部还有 📤 **发件箱**入口（OutboxScreen），列出自己已寄出但还没送达的半日达 / 择日达，按上下滑动浏览，已送达自动从列表里消失；新寄出的灵动岛 toast + 信箱 tab 红点立刻点亮，无需等推送回环。
 
@@ -59,7 +62,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 
 - **写**：奶油色信纸（`#FAF6E8`）+ 棕墨字（`#3D2A19`）；正式信件版式：**致 [对方/自己] · 正文 · 落款 [自己] · 字数计数**；iOS 键盘上方 inline accessory 「完成」按钮一键收键盘；草稿 400ms debounce 自动落 AsyncStorage，关掉重开还在
 - **封**：SealAnimation（信纸 → 信封 → 火漆印）~1.3s，作者本人也看不到自己写的内容（`my_sealed` 服务端标志，writing/sealing 阶段不返回 my_message；客户端草稿 setter 在 sealing 之后失活，避免 stale closure 把 sealing 阶段的 UI 草稿写入）
-- **选**：📮 半日达（500 字上限）/ 💌 择日达（1000 字上限），二选一卡片；半日达**单场可多发**（同一窗口写多少封都行，到点一起送达），不再是「一场一封」的限制
+- **选**：📮 半日达 / 💌 择日达，二选一卡片；**两类信件 1000 字上限对齐**（半日达 v1.3.7 从 500 提到 1000，前端字数计数与服务端 reject 阈值统一）；半日达**单场可多发**（同一窗口写多少封都行，到点一起送达），不再是「一场一封」的限制
 - **择日达详情**：年/月/日 + 时/分**五段下拉选择器**（不再是日历点击，6 年窗口，月日联动 clamp）；**双时区即时预览**——同时显示「我（北京时间）：04-27 20:34」与「ta 那边收到时：04-28 04:34」，让对方拿到的也是整点钟整分；可见性切换 🪞 给自己 / 💕 给对方
 - **寄**：信件缩小 + 微微旋转 + 沿 Y 轴落入信箱图标（~520ms）+ 信箱小弹跳（~180ms），左右随机偏置增加变化
 
@@ -69,6 +72,9 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 - **滑动 haptic + 标题栏渐变 + 未读 pill + 邮戳时间戳**（双时区邮戳 = 寄出方 TZ + 收件方 TZ）
 - **右划删除**：仅中央卡可触发，飞出阈值 38% 屏宽，触发后调用 trash API + 顶部弹出灵动岛风格 toast
 - **未读小旗子**：服务端 letter list 与本地 `INBOX_LAST_SEEN` cursor 比对，新到的飞旗子；打开 InboxScreen 即刷新 cursor 到 now
+- **长信完整可读**：信纸用「definite-height 根 + flex 链」布局，header / footer / Dynamic Type 怎么变 ScrollView 都拿得到正确剩余空间；底部「还有更多」渐隐条 + scrollIndicator + 「拖动阅读 · 轻点空白处收起」提示文案三处 affordance 让用户知道可以滚（v1.3.4 / v1.3.6）
+- **长信不再牵动收件箱**：letter overlay 包在自己的 `transparent` Modal（=iOS `overFullScreen`）里，盖住底下的 pageSheet InboxScreen，pageSheet 的 swipe-to-dismiss recognizer 收不到 touch，长信 ScrollView 滑到边界只是自己 bounce 回弹，不会把整个信箱 modal 拖走（v1.3.8）
+- **排序保障**：`(arrivedAt ASC, writtenAt ASC)` 复合排序 + scroll-to-bottom 初始化，同 session 多封信按写信时间 tiebreak，新解锁的 capsule 也能落到顶层（v1.2.17 / v1.2.18）
 
 #### 🗑️ 废件箱（TrashScreen）
 - 单条「恢复」/「彻底删除」+ 选择模式批量「全部恢复」/「全部删除」
@@ -95,6 +101,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
   - 年/月/日**三段下拉选择**（不再用日历点击，方便选 20 年前的纪念日）
   - 已过去的不重复纪念日自动显示「已经 N 天啦！」
   - 「添加纪念日」改用 App 级灵动岛 pill 入口
+  - 每条纪念日带「编辑」按钮，复用同一 picker 表单，提交分支 POST vs PUT 切换；以前只有「删了重建」一条路（v1.3.7）
 - **心愿清单**：一起完成的 bucket list，按分类管理（旅行 / 美食 / 活动 / 其他）
   - 「添加心愿」也是灵动岛 pill；输入框不自动 focus，避免一进页面就弹键盘
   - **创建者区分**：每条心愿左侧 4px 彩条 + 右侧 chip，自己粉色（`COLORS.kiss`）/ 对方浅蓝（`#7AB8D6`）
@@ -116,15 +123,18 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 - **iOS WidgetKit 小组件**：桌面卡片框架已搭好（`couple-buzz-app/targets/widget/`），数据接通排期 v1.3
 - **OTA 热更新**：纯 JS 改动通过 EAS Updates 秒推到手机，无需重 build
 - **JWT 双 token + 多设备会话**：access 15 分钟 / refresh 90 天，refresh token 自动轮换 + 单事务化轮换 + 并发刷新加锁；每条 refresh token 绑定一个 `session_id`（设备名 / 机型 / 系统 / App 版本 / 上次活跃 / `is_primary` / `revoked` 都在 `refresh_tokens` 行内），auth 中间件每次请求都过 `isSessionActive()`，强制下线 / 主设备切换即时生效；token_version 字段保留作全账号即时吊销开关
+- **弱网 refresh grace 5 min**：rotation grace window 从 10 s 拉到 300 s 后地铁 / 电梯 / 弱 Wi-Fi 上 refresh 响应丢包不会被踢；客户端 bootstrap 遇 generic AuthError 等 2.5s 再 retry 一次 getStatus 才决定清账号；revoked session 仍立即返回 `code:session_revoked` 强制下线，安全语义不变（v1.2.19）
+- **重登多设备智能合并**：以 APNs device_token 作「同一物理设备」唯一可信信号 —— `/login` 和 `PUT /device-token` 检测到 token 已绑定到本用户旧 session 时自动 revoke 那个旧 session 并把 `device_name + is_primary` 继承过来；两台同名 iPhone（APNs token 不同）依旧并存。客户端登录带上 `storage.getApnsTokenCache()` 缓存值（device-scoped, 不参与 clearAll）（v1.2.17）
 - **多设备 APNs 推送**：`device_tokens` 表（`apns_token` PK + `user_id` + `session_id`）替代 `users.device_token` 单值字段，一个用户在 N 台设备登录就 N 行；`pushToUser` 自动 fan-out 到所有设备，APNs 410 失效 token 自动清理；与 sessions 关联的 token 在 `DELETE /sessions/:sid` 时一并删
 - **跨端状态同步上服务端**：每日已读（`daily_seen_date / pa / ps`）/ 收件箱已读（`inbox_last_seen`）/ 发件箱已读（`outbox_last_seen`）/ 写信草稿（`write_letter_draft`）以前都只在 AsyncStorage，换设备 / 重装就丢；现在全部存到 `users` 表对应字段，多设备状态实时一致；写入路径加 only-advance 守卫，旧请求乱序到达不会把游标 roll back
 - **pair_id 关系实体 + 90 天数据 TTL**：`couples` 表把每段「关系」抽象成稳定 10 字符 `pair_id`（用户 a < b lex 排序保证唯一），所有 couple-scoped 数据（actions / mailbox / capsules / sticky / important_dates / daily_answers / ritual / inbox_actions）都打 `pair_id` 标签；解绑写 `ended_at`，**90 天内**重绑同一对人 → `ended_at` 清空，全套数据复活；TTL 调度器 03:00 UTC 每日扫一次过期 couple 硬删
-- **APNs badge 全推送覆盖**：`pushToUser` 在 caller 没传 badge 时兜底取真实跨功能未读数（History + 信箱 + 已解锁 capsule + 小贴吧 partner block 累加，floor=1），`scheduler.broadcastPush` 也按用户 fan-out 走同一管道，所有推送类型都会刷新桌面图标红圈（v1.2.6 修复）
+- **APNs badge 全推送覆盖 + 每推送 +1**：`pushToUser` 在 caller 没传 badge 时兜底取真实跨功能未读数（History + 信箱 + 已解锁 capsule + 小贴吧 partner block 累加，floor=1）；`scheduler.broadcastPush` 也按用户 fan-out 走同一管道；并额外维护 `users.unack_push_count` 计数列，每次 push 自增 1，最终 badge = max(1, 跨功能未读数, 该计数)，让 `date_new / ritual_* / weather_* / urge_* / weekly_report / bucket_* / snap_*` 这些没有自己未读游标的推送类型也能让图标数字 +1；前台 `POST /api/badge-ack` reset 计数（v1.2.6 起累计修复，v1.2.18 起 +1 计数）
 - **限流分层**：注册 / 配对 / 认证 / 普通 API 各自独立的速率限制
 - **Socket 触摸限速**：服务端 5 events / 1s 的滚动窗口拦截畸形/恶意客户端，省电省 APNs 配额
 - **多设备并发 socket**：presence 用 `Map<userId, Set<socketId>>` 维护，手机 + iPad 同时在线不再误报对方掉线，touch_end 仅在最后一个 touching 设备离开时广播
 - **Presence 防闪 / 防残留**：3s debounce 才广播 `presence_both` 避免快速重连闪烁；disconnect 留 1.5s grace + stale-closure guard（旧 closure 检测到 presence 已被新 session 覆盖直接 bail）；on-connect 给孤身 socket 主动补一次 `presence_single` 治愈历史残留状态
-- **Capsule 解锁推送防重复**：`time_capsules.notified_at` 列 + 调度器分钟级 dedup key，进程重启 / 时钟漂移 / 多次扫描都不会让对方收到第二遍开信通知
+- **Capsule 解锁推送防重复 + 分钟级精度**：`time_capsules.notified_at` 列 + 调度器分钟级 dedup key，进程重启 / 时钟漂移 / 多次扫描都不会让对方收到第二遍开信通知；scheduler 去掉 5 min 节流改成每分钟扫一次（v1.2.17）；`GET /api/capsules` 加 **auto-open sweep**，到点的 capsule 在 recipient 拉列表时直接 `opened_at=unlock_at`，对齐半日达「session reveal 自动揭晓」语义，且避免 race 把刚自动 open 的 capsule 再次标成新到达
+- **socket daily_update 转发**：v1.3.7 修复 `services/socket.ts` 漏接 `daily_update` 的 bug —— 之前 DailyQuestionCard / DailySnapCard 的 `subscribe('daily_update')` 永远收不到，要手动下拉刷新才能看到对方答题 / 拍照；现在双方同在「每日」tab 时一方提交对方屏幕立刻刷新
 - **响应式适配**：爱心心跳 / 触摸圆环 / 写信 pill / 卡片高度 / 信纸字号 / iPad 信件宽度等 7 处按屏幕尺寸动态计算，从 iPhone SE 到 iPad mini 都不变形
 - **健康检查**：`GET /health`
 - **下拉刷新**：每日 / 信箱 / 数据三 tab 都支持
@@ -164,7 +174,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 - Multer（图片上传 5MB + image MIME 白名单 + atomic tmp/rename 防覆写）
 - JWT + scrypt 密码哈希 + refresh token 哈希存储 + 并发轮换锁 + 事务化轮换 + per-session 设备元信息 + 强制下线即时生效
 - node-cron 调度（mailbox reveal / capsule unlock / 周报 / couple TTL 03:00 UTC 硬删，capsule 推送 `notified_at` 列持久 dedup）
-- Jest + supertest（**181 个接口测试用例**）
+- Jest + supertest（**15 个 suite / 366 个测试用例** —— 含 api.test + regression_h_bugs / ml_bugs / coverage_gaps + 11 个版本回归 suite v1.2.17 → v1.3.8）
 - express-rate-limit
 - GPG 加密备份 + cron + 离线私钥
 
@@ -178,10 +188,11 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 | Token | JWT 双 token + token_version 即时吊销 + refresh token 哈希存储 + 自动轮换 + 并发刷新锁 + 单条事务化轮换 |
 | 多设备会话 | per-session `is_primary / revoked / device_*` 元数据；强制下线立刻吊销该 session（auth 中间件每请求过 `isSessionActive`）；DELETE /sessions/:sid 同时清掉绑定的 device_token；自我下线返回新登录入口 |
 | pair_id 关系隔离 | `couples` 表唯一 pair_id（user_a < user_b lex 排序）；所有 couple-scoped 数据贴 pair_id 标签；解绑写 `ended_at` 进入 90 天 grace；中间换过别的对象再换回来不会读到错误关系的旧数据；TTL 后硬删 |
+| Cross-pair lookup 防御纵深 | `getMailboxMessageById / getCapsuleById` 签名加 `pairId` 参数，row 自身 `pair_id != null && != ctx.pairId` 时直接 undefined；3 处调用点（validateInboxRef×2 + inbox/trash unopened check）全部传 ctx.pairId（v1.3.7） |
 | 图片访问 | HMAC 签名 URL（1h TTL + timing-safe verify + 路径正则严格） |
 | WebSocket | 一次性 ticket 30s TTL + origin 白名单 + 多设备 Set 维护 + touch 5/1s 滚动窗口限速 |
 | SQL 注入 | 全部 prepared statements 参数化绑定，零字符串拼接 |
-| 输入校验 | typeof + length 上限 + YYYY-MM-DD 严格格式 + week/month 范围校验 + reaction 一次性服务端锁 + sticky content 长度校验 |
+| 输入校验 | typeof + length 上限 + YYYY-MM-DD 严格格式 + week/month 范围校验 + daily-reaction 一次性服务端锁 + sticky content 长度校验 + history_title trim/30 字 |
 | 文件上传 | atomic tmp+rename + DB pre-check + 5MB + MIME 白名单 |
 | 路径穿越 | regex 严格 + HMAC + 文件名/路径不取自 client 输入 |
 | 随机源 | `crypto.randomInt` 生成用户 ID / 配对码 |
@@ -200,7 +211,131 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 | Presence 残留 | disconnect 1.5s grace + stale-closure guard（旧 closure 通过身份 token 比对识别已被新 session 覆盖）+ on-connect 给孤身 socket 补 `presence_single` |
 | 数据备份 | GPG 公钥加密（AES-256），私钥离线 U 盘 + 密码管理器 passphrase |
 
-### v1.2.16（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.16)）
+### v1.3.8（2026-05-27，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.3.8)）
+
+**长信滑到边界牵动收件箱整体 — 改用 nested Modal 隔离手势**
+
+- 根因：InboxScreen 是 `presentationStyle="pageSheet"` 原生 Modal，自带 swipe-to-dismiss 识别器。`EnvelopeOpenAnimation` 之前以 `wrapInModal={false}` 渲染成 sibling absoluteFill，没法屏蔽 iOS native 那个 pageSheet recognizer，长信 ScrollView 滑到边界把整个 InboxScreen modal 带走
+- 修复：InboxScreen 移除 `wrapInModal={false}` 回到默认行为 —— letter overlay 包在自己的 `<Modal transparent>`（=iOS `overFullScreen`）里，**无 swipe-to-dismiss + 完全盖住底下 pageSheet 吞掉所有 touch**，ScrollView 自包含，bounce 回弹不会牵动 pageSheet
+- 顺手把 `wrapInModal` docstring 改成「DO NOT pass false from inside a pageSheet Modal」+ 引用 v1.3.8 根因防下次踩坑
+- `regression_v1_3_8.test.ts` 6 条 + 全量 15 suites / 366 tests passed
+
+### v1.3.7（2026-05-27）
+
+**4 项审计修复**
+
+- **P0** 半日达 501–1000 字写不出去 —— server 上限 500 → 1000 与 capsule 对齐，删掉前端那段已无意义的 client-side 500 字守卫
+- **P1** `daily_update` socket 事件客户端没转发 —— `services/socket.ts` 加一行 `socket.on('daily_update', d => emit(...))`，与已有 7 个事件同模式，DailyQuestionCard / DailySnapCard 的 subscribe 终于生效
+- **P1** 编辑纪念日功能后端有路由前端没调 —— `api.updateDate(id, title, date, recurring)` + AnniversaryWishScreen 加 `editingDate` state / handleStartEdit / handleSaveDate / 复用 picker，提交分支 POST vs PUT；每条纪念日加「编辑」按钮
+- **P2** Cross-pair lookup 防御纵深 —— `MailboxMessage / TimeCapsule` interface 加 pair_id（nullable 兼容 legacy）；`getMailboxMessageById / getCapsuleById` 签名加 pairId 参数；3 处调用点全部传 ctx.pairId
+- `regression_v1_3_7.test.ts` 13 条 + 全量 14 suites / 360 tests passed
+
+### v1.3.6（2026-05-27）
+
+**长信看不到全貌 — 砍掉 200pt 硬编码 reserve 改 flex 链**
+
+- 根因：`contentScroll.maxHeight = LETTER_MAX_H - 200` 在 iPhone SE 1st (568pt) / Dynamic Type Large+ / 长备注名换行三种边缘情况下都是错的，ScrollView 视口要么窄到 7-8 行要么直接溢出 letterCenter
+- 修复：布局改成「definite-height 根 + flex 链」—— letterCenter / letterContainer 用 height (definite)；letterPress 去掉 minHeight/maxHeight 改 `flex:1`；contentWrap 加 `flex:1 + minHeight:0`（RN column-flex shrink 必填）；contentScroll 改 `flex:1` 砍掉 flexShrink + maxHeight
+- 权衡：短信卡片现在固定 LETTER_MAX_H 高度有留白，视觉上更「信件感」且和长信尺寸一致
+- 347 tests passed
+
+### v1.3.5（2026-05-27）
+
+**fadeOpacity inputRange 双分支避免重复边界**
+
+- `overflowAmount` 在 (0.5, 30] 时原写法生成 `inputRange=[0, 0, X]` 有重复首边界，RN 文档说「允许相等但行为 implementation-defined」；按 `overflowAmount > 30` 分两条等价分支，inputRange 严格递增更耐 RN 版本升级
+
+### v1.3.4（2026-05-27）
+
+**长信加 3 处滚动 affordance — indicator / 底部渐隐 / 拖动文案**
+
+- v1.3.3 改对了 layout 但用户不知道可以滚 —— 把发现性补齐：
+  1. `showsVerticalScrollIndicator` 重新开启（iOS 触摸期间可见，平时不打扰）
+  2. 底部「还有更多」渐隐条（LinearGradient transparent → white），仅 `contentHeight > scrollViewHeight` 时挂载，Animated 跟 scrollY 联动距底 30pt 内淡出，`pointerEvents="none"` 不抢手势
+  3. tapHint 文案改成「**拖动阅读** · 轻点空白处收起」
+- useEffect 在 (visible, content) 切换时重置 scrollY + measurements 防换信带着上一封的 scroll 位置
+- `regression_v1_3_4.test.ts` +13 / 344 tests passed
+
+### v1.3.3（2026-05-27）
+
+**长信无法滚动 + 撕下来 500**
+
+- **#1 信纸读取无法滚动**：`contentScroll` 只有 flexShrink 没显式 maxHeight，RN 0.81 在 flex column 中 ScrollView 撑成 content 高度，父卡片 clip 在 maxHeight 但 ScrollView 内部感知不到 overflow → 不滚。临时改 maxHeight = LETTER_MAX_H - 200 让长信能滚（v1.3.6 进一步改成 flex 链）；`envelopeWrap` 的 pointerEvents `none` → `box-none` 首次解开模式下也能滚
+- **#2 撕下来 500**：`deleteSticky()` 还在按 v1.2.0 之前 5-placeholder OR 子句传参，但 pair_id 重构后 `stmtGetStickyForCouple` 只接受 2 个占位符 (id, pair_id)，better-sqlite3 抛 RangeError → 500。改函数签名 `(stickyId, pairId)`，路由层传 `ctx.pairId`
+- `regression_v1_3_3.test.ts` +12 / 331 tests passed
+
+### v1.3.2（2026-05-22）
+
+**废话区翻页改成单次拉动触发 + 快照日历 ta｜我 toggle**
+
+- **HistoryScreen 翻页修复**：之前用户拉到顶部 onScroll 持续触发 loadOlder 直到 `has_more=false` 把对话一路刷到第一条。改成 interaction state machine（idle / dragging / momentum + per-interaction fired latch）：**每次手指拖动至多触发一次 loadOlder**，要下一页必须重新拖动
+- **SnapCalendarScreen ta｜我 segmented toggle**：右下角与「收起」pill 同一行，每格只渲染当前模式那一侧的照片（PolaroidThumb 改成单图 + 底部 accent 条：粉色=我 / 蓝色=ta），预览 overlay 同样过滤；反窥探在服务端不变
+- `regression_v1_3_2.test.ts` +21 / 319 tests passed
+
+### v1.3.1（2026-05-22）
+
+**表情连发推送合并 + 废话区上拉翻页 + 快照日历点空白收起**
+
+- **#1 同表情连发 push 合并（锁屏只显示 1 条 ×N）**：新建 `server/src/bursts.ts` 在内存里跟踪 `(recipient, sender, action_type)` burst，5 min 滚动窗口跟 v1.2.20 客户端对齐；`trackBurst` 每次返回当前 count + 稳定的 `collapseId`（整段 burst 共用）。`/api/action` 调 trackBurst，`count > 1` 时构造 "{name} <verb>… ×N" 作 bodyOverride，**始终带 collapseId**；APNs collapse-id 把锁屏的旧通知替换掉，5 个 💋 spam 在锁屏只出 1 条 banner 数字滚到 ×5
+- **#2 废话区上拉翻页（loadOlder）**：`stmtGetHistoryBefore` SQL（WHERE a.id < ?）；`GET /api/history` 加 `before_id` 查询参数 + `has_more` 响应字段；客户端 `api.getHistory(limit, beforeId?)` + HistoryScreen state 重心从 sections 改成 `rawActions`，sections 用 useMemo 派生，mergeRaw 按 id 去重合并；加 `onScroll`（距顶 < 80pt 触发）+ `onListContentSizeChange`（latestId 真变大 + 用户在底部才 scrollToEnd 避免 prepend 跳屏）；SectionList 用 `maintainVisibleContentPosition` 让 prepend 旧消息时可视区不动
+- **#3 快照日历点空白收起**：ScrollView 套 `<Pressable onPress={onClose}>`，cell 自己的 TouchableOpacity 优先消费 onPress，scroll 手势归 ScrollView；点 grid 区空白（cell 间隙 / padding / 空月份）收起
+- `regression_v1_3_1.test.ts` +21 / 298 tests passed
+
+### v1.3.0（2026-05-22）
+
+**快照反窥探 4 个完整场景测试**
+
+- 补 v1.2.21 验收：服务端反窥探机制现在由 4 个测试从双方视角全覆盖（之前只有 1 个单边测试）—— 1) 只 ta 拍 → 我 my_photo=null & partner_photo=null + ta 自己只看到 my_photo；2) 只我拍 → 镜像 case；3) 双方都拍 → 双方都看见两张（both_snapped=true）；4) 跨日不解锁 → 我拍 day-A 不会泄露 ta 的 day-B 照片（per-day check）
+- 277 tests passed
+
+### v1.2.21（2026-05-22）
+
+**信箱新增快照日历 + 全清「废话区反应」功能 + 死代码清理**
+
+- **反应功能完全移除**：服务端 `POST /api/reaction` 整条路由删 + `dbOps.addReaction/getReaction/updateReaction/getHistoryReactions` + 对应 SQL prepared statements 全删；`/api/history` response `reactions:{}` 空对象保留一发兜底旧 OTA bundle；`push.ts` 删 `reaction` 模板；客户端 `api.sendReaction / ReactionResponse / ReactionPicker.tsx` 整文件删；`ActionRecord` 删 `onLongPress + reactions` props；`actions.reply_to` 列保留（SQLite drop-column 需重建表，老 orphan 行被 `reply_to IS NULL` filter 隔离）。**注意**：daily-reaction（每日问答 / 快照的 👍👎）是独立 endpoint，照常工作
+- **信箱新增「📷 快照日历」入口**：`SnapCalendarScreen.tsx`（pageSheet modal，模仿 InboxScreen/StickyWall 同款架构）—— 月份切换器 + 7 列日历网格 + Polaroid 缩略图 cell + 全屏预览 overlay + 收起 pill；today cell 粉边框；网格 cell 单 polaroid / 双 polaroid 错位叠放（两人都拍时我的在上 +2° / ta 的在下 -2°）；MailboxScreen 在「📝 小贴吧」下方加 entry card，ref + onRefresh 联动 reload；复用现有 `GET /api/snaps?month=YYYY-MM`（反窥探：caller 没拍那天 partner_photo 不下发）
+- **死代码清理**：客户端 `api.openCapsule`（v1.2.17 后改 auto-open sweep 替代）+ `api.logout`（被 `revokeSessionGroup` 替代）；服务端 `dbOps.pairUsers / unpairUsers`（被 `pairCouple / unpairCouple` 取代）+ `dbOps.getSession / getRituals / getAllPairedUserTokens / saveSnap` + `stmtGetRituals / stmtGetAllPairedTokens` SQL 全清
+- `regression_v1_2_21.test.ts` +24 / 273 tests passed
+
+### v1.2.20（2026-05-22）
+
+**表情连发去重（×NN bounce）+ 长按标题自定义跟随账号**
+
+- **同表情连发去重（屏幕内）**：HistoryScreen 新增 `collapseBursts()` —— 同 user_id + 同 action_type + 距上一条 ≤ 5 min 折叠成一个 burst，leader 的 id 作 React key 保持稳定，displayCreatedAt / latestId 滚到最新成员；在 `groupByDate` 内部 per-day 调用防止跨日误并；`injectUnreadDivider` 改用 `(latestId ?? id)` 比 boundaryId
+- **ActionRecord ×NN 徽章**：`count > 1` 时 emoji 后渲染 ×NN，`prevCountRef + Animated.sequence`，只有 count 严格变大才弹跳，历史回放 "kiss ×3" 加载时不会无端跳
+- **长按标题自定义**：`users.history_title` 新列（TEXT NOT NULL DEFAULT ''），空串=用默认；`PUT /api/profile` 加 optional `history_title` 字段：trim / 30 字上限 / non-string 400 / whitespace-only 视为清空 / undefined 不动现有值（老客户端兼容）；`GET /api/status` 带字段；客户端 storage `HISTORY_TITLE_KEY` + App.tsx 三处 caching 全部同步；HistoryScreen 标题 `onLongPress → Alert.prompt → updateProfile`，DEFAULT_HISTORY_TITLE = `'香宝聚集地 💕'`
+- 27 个新回归测试（228 → 255）
+
+### v1.2.19（2026-05-21）
+
+**弱网误踢 + 登录 ID autofill**
+
+- **弱网误踢回登录页**：服务端 `/api/auth/refresh` rotation grace window 10 s → 300 s（地铁 / 电梯 / 弱 Wi-Fi 一个 round-trip 常超 10 s）；revoked session 仍在 grace 检查之后立即返回 `code:session_revoked`，强制下线保证不变。客户端 App.tsx bootstrap 在 generic AuthError 上等 2.5s 再 retry 一次 getStatus 才决定是否清账号；抽 applyStatus / fallbackToCachedOrWaiting 让首试和 retry 路径复用
+- **重新登录时 ID 不能 autofill**：SetupScreen 登录表单 `loginId` 加 `textContentType="username" + autoComplete="username"`，`loginPassword` 加 `textContentType="password" + autoComplete="password"`，iOS QuickType 栏现在能在 ID 字段建议保存的凭证
+- 11 个新回归测试（217 → 228）
+
+### v1.2.18（2026-05-21）
+
+**4 项打磨：每推送 +1 角标 / 登录后时区生效 / tab 红点 race / 收件箱排序**
+
+- **APNs badge 每次 +1**：`users.unack_push_count` 新列，`pushToUser` 每次 INCREMENT，最终 `badge = max(1, 跨功能未读数, 该计数)`；`POST /api/badge-ack` reset 计数；mark-read 也 reset
+- **登录后时区生效**：App.tsx bootstrap / waiting-state poll / handleRegistered 都拉 `status.timezone + partner_timezone + partner_remark` 存进 AsyncStorage，确保首屏 WriteLetterScreen 预览 / InboxScreen 邮戳 / MailboxScreen 下次送达提示用真实 tz 不再 fallback `Asia/Shanghai`；SettingsScreen.loadStatus 也同步进 storage 让跨设备改完 tz 另一台 focus 即生效
+- **信箱 tab 红点二次加固**：`GET /api/capsules` auto-open sweep 改用 `autoOpenCapsule` 把 `opened_at` 写成 `unlock_at` 而非 `CURRENT_TIMESTAMP`，避免 race 把刚自动 open 的 capsule 再次标成新到达；语义也更对（「收于」邮戳 = 信件实际送达时刻）
+- **收件箱排序明确化**：3 个 e2e sort 测试 —— 单纯按到达 / 同 session 多封信按写信时间 tiebreak / 混合 mailbox + 新解锁 capsule 也能让 capsule 落顶层
+- 14 个新回归测试（203 → 217）
+
+### v1.2.17（2026-05-21）
+
+**3 bug + 2 优化：择日达对方收不到 / tab 红点污染 / 重登多设备 / 分钟级解锁 / 收件箱排序**
+
+- **BUG1 择日达对方收不到**：`GET /api/capsules` 加 auto-open sweep —— 到点的 capsule 在 recipient 拉列表时直接 open，对齐半日达「session reveal 自动揭晓」语义；修了「openCapsule endpoint 客户端从未调用 + InboxScreen 直接过滤掉 `opened_at=null` 的 capsule」造成的死锁
+- **BUG2 写信后信箱 tab 红点**：App.tsx 去掉 `hasFreshOutboxItems + subscribeOutboxChanged` 对 tab dot 的驱动，tab 红点只由 partner→me 信号（sticky + inbox 未读）驱动；发件箱 🚩 入口卡红旗由 MailboxScreen 内部状态维持不受影响
+- **BUG3 重登后「新的本机」**：用 APNs device_token 作「同物理设备」唯一可信信号，`/login` 和 `PUT /device-token` 检测到 token 已绑定到本用户旧 session 时自动 revoke 那个旧 session 并把 device_name + is_primary 继承过来；两台同名 iPhone（APNs token 不同）依旧并存；客户端 storage `getApnsTokenCache / setApnsTokenCache`（device-scoped，不参与 clearAll）
+- **REQ1 择日达分钟精度**：scheduler 去掉 `utcMin % 5 === 0` 节流，capsule unlock 每分钟扫一次；`notified_at + fireOnce` 分钟桶仍保证不会重复推送
+- **REQ2 收件箱排序**：LetterCard 加 `writtenAt` 字段；排序改 `(arrivedAt ASC, writtenAt ASC)` —— 同 session 揭晓的多封信中，后写的落屏幕底部 = 开信箱第一眼看到
+- 22 个新回归测试 + 全部 181 个老测试通过（203/203）
+
+### v1.2.16（2026-05-10）
 
 **README docs 同步**
 
@@ -396,22 +531,23 @@ PoopHub/
 │   ├── app.config.ts                  # Expo + EAS 配置
 │   ├── eas.json                       # EAS Build profile
 │   ├── src/
-│   │   ├── screens/                   # Home / History / Us / Mailbox / WriteLetter / Inbox / Outbox / Trash / StickyWall / AnniversaryWish / Settings / Setup
-│   │   ├── components/                # DailyQuestionCard / DailySnapCard / RitualButton / TouchArea / BucketListCard / SealAnimation / EnvelopeOpenAnimation / IslandToast / SpringPressable / StickyNote / FireworksOverlay / DeviceListCard / WeeklyReportCard / StatsCard / ActionRecord / ReactionPicker
-│   │   ├── services/                  # api（含 sessions / sync / outbox 接口）/ socket / notification
-│   │   ├── utils/                     # storage / countdown / postmark / inboxUnread / outboxEvents / toolbarSlot / device / timezone
+│   │   ├── screens/                   # Home / History / Us / Mailbox / WriteLetter / Inbox / Outbox / Trash / StickyWall / SnapCalendar / AnniversaryWish / Settings / Setup
+│   │   ├── components/                # DailyQuestionCard / DailySnapCard / RitualButton / TouchArea / BucketListCard / SealAnimation / EnvelopeOpenAnimation / IslandToast / SpringPressable / StickyNote / FireworksOverlay / DeviceListCard / WeeklyReportCard / StatsCard / ActionRecord（ReactionPicker 在 v1.2.21 整文件移除）
+│   │   ├── services/                  # api（含 sessions / sync / outbox / letter-draft / dates PUT / history before_id 翻页）/ socket（含 daily_update 转发）/ notification
+│   │   ├── utils/                     # storage（含 HISTORY_TITLE / APNs_TOKEN_CACHE keys）/ countdown / postmark / inboxUnread / outboxEvents / toolbarSlot / device / timezone
 │   │   └── constants.ts               # 颜色 / 表情配置
-│   └── targets/widget/                # iOS WidgetKit Swift（v1.3 接通）
+│   └── targets/widget/                # iOS WidgetKit Swift 框架（expo-target.config.js + index.swift，数据桥未接通）
 │
 └── couple-buzz-server/
     ├── src/
     │   ├── index.ts                   # Express 入口 + 中间件 + 限流
-    │   ├── routes.ts                  # REST API（含 sticky-wall 11 个接口 + inbox trash/restore/purge + sessions 三件套 + sync 三组游标 + outbox + letter-draft）
-    │   ├── socket.ts                  # WebSocket touch / presence（多设备 Set + 重连快照 + 5/1s 限速 + stale-closure guard）
-    │   ├── auth.ts                    # JWT / scrypt / HMAC 图片签名 / refresh 并发锁 + 事务轮换 + per-session 元数据 + isSessionActive
-    │   ├── db.ts                      # SQLite schema + 全部 SQL 操作（couples / device_tokens / sticky_* / inbox_actions / time_capsules.notified_at / users.{daily,inbox,outbox,letter}_seen / refresh_tokens.session_id+device_*+is_primary+revoked）
-    │   ├── push.ts                    # APNs + 推送模板（payload 包 body + badge 全覆盖兜底 + 多设备 fan-out + 410 自动 evict）
-    │   ├── scheduler.ts               # 信箱 reveal / 胶囊解锁 / 周报 / couple TTL 03:00 硬删（capsule 解锁 dedup key）
+    │   ├── routes.ts                  # REST API（~70 路由：含 sticky-wall 11 个接口 + inbox trash/restore/purge + sessions 五件套（list/primary/name/group/single）+ sync 三组游标 + outbox + letter-draft + dates PUT/pin/delete + history before_id 翻页 + badge-ack + logout-all + capsules auto-open sweep）
+    │   ├── socket.ts                  # WebSocket touch / presence / action / sticky / daily_update（多设备 Set + 重连快照 + 5/1s 限速 + stale-closure guard）
+    │   ├── auth.ts                    # JWT / scrypt / HMAC 图片签名 / refresh 并发锁 + 事务轮换 + per-session 元数据 + isSessionActive + 5min refresh grace
+    │   ├── bursts.ts                  # 锁屏推送合并 ×N collapse-id（5min 滚动窗口 per (recipient, sender, action_type)）— v1.3.1 新增
+    │   ├── db.ts                      # SQLite schema + 全部 SQL 操作（couples / device_tokens / sticky_* / inbox_actions / time_capsules.notified_at / users.{daily,inbox,outbox,letter}_seen + users.history_title + users.unack_push_count / refresh_tokens.session_id+device_*+is_primary+revoked / actions.reply_to 列保留但 reactions 功能已删）
+    │   ├── push.ts                    # APNs + 推送模板（payload 包 body + badge 全覆盖兜底 + 多设备 fan-out + 410 自动 evict + PUSH_MESSAGES export 让 routes 复用模板组合 body）
+    │   ├── scheduler.ts               # 信箱 reveal / 胶囊解锁（分钟级精度，去掉 5min 节流）/ 周报 / couple TTL 03:00 硬删（capsule 解锁 dedup key）
     │   └── questions.ts               # 1000+ 每日问答题库
     ├── docs/BACKUP.md                 # GPG 加密备份完整运维指南
     ├── scripts/backup.sh              # GPG 加密备份脚本
@@ -451,7 +587,7 @@ npm run ios                 # 或 npm start 扫码
 ```bash
 cd couple-buzz-server
 JWT_SECRET=test-secret npm test
-# 181 passed
+# 15 suites / 366 passed
 ```
 
 ---
@@ -499,7 +635,48 @@ OTA 推送后手机端**冷启动两次**生效。
 
 ## Roadmap
 
-### v1.2.16（2026-05-10，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.2.16)）
+### v1.3.8（2026-05-27，[Latest](https://github.com/Temp1258/PoopHub/releases/tag/v1.3.8)）
+- [x] **长信滑到边界牵动收件箱整体** — letter overlay 改 transparent Modal（=`overFullScreen`）盖住 pageSheet InboxScreen，吞掉 swipe-to-dismiss 手势；`regression_v1_3_8` +6 / 366 全过
+
+### v1.3.7（2026-05-27）
+- [x] **4 项审计修复** — 半日达字数 500→1000 / `daily_update` socket 转发 / 纪念日编辑 API + UI / cross-pair lookup pairId 防御层；+13 测试 / 360 全过
+
+### v1.3.3 → v1.3.6（2026-05-27）
+- [x] **长信完整可读** — flex 链替代硬编码 200pt reserve（iPhone SE / Dynamic Type / 长备注全部覆盖）+ 滚动 affordance 3 件套（indicator / 底部渐隐 / 「拖动阅读」copy）+ fadeOpacity 双分支避免 inputRange 重复边界 + envelopeWrap pointerEvents 改 box-none + deleteSticky 5-arg → 2-arg pair_id 适配；+30 测试
+
+### v1.3.0 → v1.3.2（2026-05-22）
+- [x] **表情连发推送合并** — `bursts.ts` 5min 滚动窗口 + APNs collapse-id，锁屏 5 个 💋 spam 只显示 1 条 ×5 banner
+- [x] **废话区上拉翻页** — `before_id` cursor + `has_more` + `maintainVisibleContentPosition` + 单次拖动至多触发一次 loadOlder
+- [x] **快照日历 ta｜我 toggle + 点空白收起 + 反窥探 4 场景测试**
+- +63 测试
+
+### v1.2.21（2026-05-22）
+- [x] **信箱新增「📷 快照日历」入口** — pageSheet modal + 7 列网格 + Polaroid 缩略图 + ta/我 单视角
+- [x] **「废话区反应」功能完全移除** —— server route + dbOps + push 模板 + ReactionPicker.tsx + ActionRecord onLongPress 全删；daily-reaction 独立保留
+- [x] **8 处死代码清理** —— openCapsule / api.logout / pairUsers / unpairUsers / getSession / getRituals / getAllPairedUserTokens / saveSnap
+
+### v1.2.20（2026-05-22）
+- [x] **表情连发屏幕内 ×NN 去重 + bounce** — 5min 滚动窗口 collapseBursts
+- [x] **长按 HistoryScreen 标题自定义** — `users.history_title` 列 + PUT /profile 字段 + 跨设备同步
+
+### v1.2.19（2026-05-21）
+- [x] **弱网误踢修复** — refresh grace 10s→300s + bootstrap 2.5s retry
+- [x] **登录 ID autofill** — TextInput `textContentType` + `autoComplete`
+
+### v1.2.18（2026-05-21）
+- [x] **每推送 +1 角标** — `users.unack_push_count` 列 + `pushToUser` INCREMENT + `POST /api/badge-ack`
+- [x] **登录后时区生效** — bootstrap / waiting poll / handleRegistered 全部 cache tz 到 storage
+- [x] **信箱 tab 红点二次加固** — auto-open sweep `opened_at = unlock_at` 避免 race
+- [x] **收件箱排序** — `(arrivedAt ASC, writtenAt ASC)` 复合 + scroll-to-bottom + 3 个 e2e 测试
+
+### v1.2.17（2026-05-21）
+- [x] **择日达对方收不到修复** — `GET /api/capsules` auto-open sweep + 客户端 InboxScreen 过滤掉 `opened_at=null` capsule 死锁修复
+- [x] **写信后信箱 tab 红点污染修复** — 去掉 outbox 触发 tab dot
+- [x] **重登多设备「新的本机」修复** — APNs device_token 作物理设备身份；自动 revoke + 继承 device_name + is_primary
+- [x] **择日达分钟级解锁** — scheduler 去掉 5min 节流
+- [x] **收件箱排序** — `(arrivedAt, writtenAt)` 同 session 后写的落底部 = 开信箱第一眼
+
+### v1.2.16（2026-05-10）
 - [x] **README docs 同步** — 测试数 stale 130→181 / 项目结构 components+utils 实际化 / v1.2.14 行数 350→950 修正 / backfill v1.2.7—v1.2.11
 
 ### v1.2.15（2026-05-10）
@@ -573,17 +750,21 @@ OTA 推送后手机端**冷启动两次**生效。
 ### v1.0.0（2026-04-27）
 - [x] MVP：5 tab 结构、双场信箱、couple ID、APNs 推送、JWT 双 token、95 接口测试
 
-### v1.3 计划
-- [ ] iOS Widget：接通数据写入 App Group UserDefaults（结构已搭好，差 native bridge）
-- [ ] 备份失败主动告警（cron 失败邮件 / pushover 通知）
-- [ ] 异地备份多云冗余（自动 sync 到 Google Drive / Dropbox）
-- [ ] Android 测试
+### 仍未实施（截至 v1.3.8）
+
+> v1.3 系列实际落地的是「长信滚动 + 锁屏推送合并 + 翻页 + 快照日历 + 一堆审计修复」，原 v1.3 roadmap 的 4 个长期项一个都没动。
+
+- [ ] **iOS Widget**：接通数据写入 App Group UserDefaults。`couple-buzz-app/targets/widget/` 只有 `expo-target.config.js` + 占位 `index.swift`，**native 数据桥未接通**
+- [ ] **备份失败主动告警**（cron 失败邮件 / pushover 通知）
+- [ ] **异地备份多云冗余**（自动 sync 到 Google Drive / Dropbox）
+- [ ] **Android 测试 / 适配**
 
 ### 未来想法
-- [ ] 端到端加密：mailbox / capsule 用对方公钥加密
-- [ ] 视频快照
-- [ ] 语音留言
-- [ ] 小贴吧支持图片 / 涂鸦
+
+- [ ] **端到端加密**：mailbox / capsule 用对方公钥加密
+- [ ] **视频快照**
+- [ ] **语音留言**
+- [ ] **小贴吧支持图片 / 涂鸦**
 
 ---
 
