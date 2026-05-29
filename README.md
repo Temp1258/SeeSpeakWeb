@@ -120,7 +120,7 @@ App 底部 6 个 tab：**拍拍 · 废话区 · 每日 · 信箱 · 约定 · �
 
 ## 系统能力
 
-- **iOS WidgetKit 小组件**：桌面卡片框架已搭好（`couple-buzz-app/targets/widget/`），数据接通排期 v1.3
+- **iOS WidgetKit 小组件**：桌面卡片 Swift 框架已搭好（`couple-buzz-app/targets/widget/`，预留 `partnerLastEmoji / partnerLastActionTime / streak / partnerName` 4 个 App Group UserDefaults key）
 - **OTA 热更新**：纯 JS 改动通过 EAS Updates 秒推到手机，无需重 build
 - **JWT 双 token + 多设备会话**：access 15 分钟 / refresh 90 天，refresh token 自动轮换 + 单事务化轮换 + 并发刷新加锁；每条 refresh token 绑定一个 `session_id`（设备名 / 机型 / 系统 / App 版本 / 上次活跃 / `is_primary` / `revoked` 都在 `refresh_tokens` 行内），auth 中间件每次请求都过 `isSessionActive()`，强制下线 / 主设备切换即时生效；token_version 字段保留作全账号即时吊销开关
 - **弱网 refresh grace 5 min**：rotation grace window 从 10 s 拉到 300 s 后地铁 / 电梯 / 弱 Wi-Fi 上 refresh 响应丢包不会被踢；客户端 bootstrap 遇 generic AuthError 等 2.5s 再 retry 一次 getStatus 才决定清账号；revoked session 仍立即返回 `code:session_revoked` 强制下线，安全语义不变（v1.2.19）
@@ -749,22 +749,6 @@ OTA 推送后手机端**冷启动两次**生效。
 
 ### v1.0.0（2026-04-27）
 - [x] MVP：5 tab 结构、双场信箱、couple ID、APNs 推送、JWT 双 token、95 接口测试
-
-### 仍未实施（截至 v1.3.8）
-
-> v1.3 系列实际落地的是「长信滚动 + 锁屏推送合并 + 翻页 + 快照日历 + 一堆审计修复」，原 v1.3 roadmap 的 4 个长期项一个都没动。
-
-- [ ] **iOS Widget**：接通数据写入 App Group UserDefaults。`couple-buzz-app/targets/widget/` 只有 `expo-target.config.js` + 占位 `index.swift`，**native 数据桥未接通**
-- [ ] **备份失败主动告警**（cron 失败邮件 / pushover 通知）
-- [ ] **异地备份多云冗余**（自动 sync 到 Google Drive / Dropbox）
-- [ ] **Android 测试 / 适配**
-
-### 未来想法
-
-- [ ] **端到端加密**：mailbox / capsule 用对方公钥加密
-- [ ] **视频快照**
-- [ ] **语音留言**
-- [ ] **小贴吧支持图片 / 涂鸦**
 
 ---
 
